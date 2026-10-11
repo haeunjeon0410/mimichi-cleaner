@@ -1,0 +1,9 @@
+# 폰트는 라이선스 때문에 올리지 않아요 (fonts/README.md 참고)
+fonts/*.ttf
+fonts/*.otf
+fonts/*.woff*
+# 실행하면 생기는 파일
+mimi.ico
+error.log
+*.lnk
+trace.log
