@@ -1081,10 +1081,12 @@ function Start-Analyze {
 
         Say "살펴보는 중이에요... (3/5)`nAppData 안을 둘러보고 있어요."
         $skip = 'Temp', 'CrashDumps', 'D3DSCache', 'npm-cache', 'pip', 'Yarn'
+        $t3 = Get-Date   # AppData는 폴더가 많아서, 전체 시간이 길어지지 않게 100초까지만 훑어요
         foreach ($d in Get-ChildItem $L -Directory -Force) {
             if ($skip -contains $d.Name -or ($d.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+            if (((Get-Date) - $t3).TotalSeconds -gt 100) { break }
             Say "살펴보는 중이에요... (3/5)`nAppData: $($d.Name)"
-            $r = Scan-Size $d.FullName 6; $sz = $r.Size; $tr = $r.Trunc
+            $r = Scan-Size $d.FullName 4; $sz = $r.Size; $tr = $r.Trunc
             if ($sz -lt 200MB) { continue }
             switch -Regex ($d.Name) {
                 '^Packages$' { Add-Row 'keep' $d.FullName $sz 'Microsoft Store 앱 데이터' $info $tr }
@@ -1096,10 +1098,12 @@ function Start-Analyze {
                 default { Add-Row 'check' $d.FullName $sz '프로그램 데이터. 어떤 프로그램 건지 확인 후 판단' $info $tr }
             }
         }
+        $t3 = Get-Date
         foreach ($d in Get-ChildItem $env:APPDATA -Directory -Force) {
             if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+            if (((Get-Date) - $t3).TotalSeconds -gt 50) { break }
             Say "살펴보는 중이에요... (3/5)`nAppData(Roaming): $($d.Name)"
-            $r = Scan-Size $d.FullName 5
+            $r = Scan-Size $d.FullName 3
             Add-Row 'check' $d.FullName $r.Size 'Roaming 프로그램 데이터. 어떤 프로그램 건지 확인 후 판단' $info $r.Trunc
         }
 
@@ -1145,7 +1149,7 @@ function Start-Analyze {
             Say "살펴보는 중이에요... (5/5)`nnode_modules: $root"
             $w = New-Walk (Join-Path $UserHome $root) -findDir 'node_modules' -maxDepth 4 -maxSec 25
             if ($w.FoundDirs.Count -gt 0) {
-                $nsum = 0; foreach ($n in $w.FoundDirs) { $nsum += Dir-Size $n }
+                $nsum = 0; foreach ($n in $w.FoundDirs) { $nsum += (Scan-Size $n 4).Size }
                 Add-Row 'del' "$root 의 node_modules ($($w.FoundDirs.Count)개)" $nsum 'npm install로 다시 만들 수 있어요 (안 쓰는 프로젝트만 체크하세요)' @{ Type = 'nodemodules'; Paths = @($w.FoundDirs) }
             }
         }
@@ -1220,9 +1224,9 @@ function Run-SelfTest {
     T "최대화 버튼 hover" ($script:hover -eq 'max')
     Mouse 'OnMouseMove' ($rCl.X + 10) ($rCl.Y + 10)
     T "분석 전에는 '청소 시작' 위치가 반응하지 않음" ($script:hover -eq '')
-    Toggle-Max; Pump-Ms 400
+    Toggle-Max; Pump-Until { $form.WindowState -eq 'Maximized' -and $rRes.Width -gt 840 }
     T "최대화" ($form.WindowState -eq 'Maximized' -and $rRes.Width -gt 840)
-    Toggle-Max; Pump-Ms 400
+    Toggle-Max; Pump-Until { $form.WindowState -eq 'Normal' -and $rRes.Width -eq 840 }
     T "복원" ($form.WindowState -eq 'Normal' -and $rRes.Width -eq 840)
     $form.ClientSize = New-Object Drawing.Size ([int](1100 * $Sc)), ([int](820 * $Sc)); Pump-Until { $rRes.Width -eq 1040 }
     T "창을 키우면 결과 카드와 목록도 커짐 (카드 폭 $($rRes.Width))" ($rRes.Width -eq 1040 -and $lv.Width -gt [int](900 * $Sc))

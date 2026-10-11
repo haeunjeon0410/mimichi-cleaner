@@ -44,6 +44,9 @@ C 드라이브가 꽉 찼을 때 **"지워도 되는 것 / 다른 드라이브�
 
 처음 쓸 때는 *분석*만 해 보고 목록을 훑어본 다음, 🟢 항목부터 정리하는 걸 추천해요.
 
+> ⏱️ 분석은 PC에 따라 **몇 분** 걸릴 수 있어요 (파일이 아주 많은 PC는 더). 지금 어떤 폴더를 보는지 화면에 보여줘요.
+> 파일이 수십만 개인 폴더는 시간 상한(몇 초)을 두고 *"일부만 계산"* 이라고 표시해요. 이 경우 실제로 지워지는 양은 표시된 값보다 커요.
+
 ### 옵션
 
 PowerShell에서 직접 실행하면 옵션을 줄 수 있어요.
@@ -85,7 +88,9 @@ powershell -ExecutionPolicy Bypass -File .\MimichiCleaner.ps1 -Dest "E:\Moved" -
   .\MimichiCleaner.ps1 -SelfTest                    # 마우스/최대화/크기 변경을 흉내 내서 화면 동작 점검
   .\MimichiCleaner.ps1 -Snapshot out.png            # 예시 데이터로 화면을 PNG로 저장 (-SnapPhase before|analyzing|ready|done)
   .\tests\engine.tests.ps1 -Script .\MimichiCleaner.ps1 -Work $env:TEMP   # 가짜 사용자 폴더에서 정리/이동 로직 테스트
+  .\tests\lint.ps1                                  # 함수 안에서 공용 변수($C 등)를 덮어쓰거나 기본 명령(lp 등)과 이름이 겹치는지 점검
   ```
+- PowerShell 함수 이름은 `lp`(=Out-Printer)처럼 기본 별칭과 겹치면 별칭이 먼저 실행되고, 변수는 대소문자를 구분하지 않아요. 그래서 `lint.ps1`을 만들어 두었어요.
 - 오류가 나면 창에 오류 창이 뜨는 대신 `error.log`에 남아요.
 
 ## 알림
