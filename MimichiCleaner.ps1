@@ -10,11 +10,13 @@
     -MinMB <숫자>  대용량 파일 기준 크기(MB) (기본 100)
     -MakeIcon      아이콘(mimi.ico)만 생성하고 종료
     -AutoAnalyze   실행 즉시 분석 시작
+    -Zoom <배율>   화면 크기 배율 (기본 0.8, 범위 0.5~2.0)
     -SelfTest      마우스·최대화·크기 변경을 시뮬레이션하여 화면 동작 점검 후 종료 (개발용)
 #>
 param(
     [string]$Dest = '',
     [int]$MinMB = 100,
+    [double]$Zoom = 0.8,
     [switch]$MakeIcon,
     [switch]$AutoAnalyze,
     [switch]$SelfTest,
@@ -183,7 +185,8 @@ public static class Gfx {
     public static Region RoundRegion(int w, int h, int r) { using (GraphicsPath p = Round(0, 0, w, h, r)) return new Region(p); }
 }
 '@
-$Sc = [Gfx]::DpiScale()
+$Zoom = [math]::Min(2.0, [math]::Max(0.5, $Zoom))   # 기본 화면 크기 배율 (1.0 = 설계 크기)
+$Sc = [Gfx]::DpiScale() * $Zoom
 
 $ErrorActionPreference = 'SilentlyContinue'
 $UserHome = $env:USERPROFILE

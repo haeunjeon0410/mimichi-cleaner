@@ -58,6 +58,7 @@ powershell -ExecutionPolicy Bypass -File .\MimichiCleaner.ps1 -Dest "E:\Moved" -
 | `-Dest` | 이동 대상 폴더 | 여유 공간이 가장 큰 비시스템 드라이브의 `정리대기` |
 | `-MinMB` | 대용량 파일 기준(MB) | 100 |
 | `-AutoAnalyze` | 실행 즉시 분석 | - |
+| `-Zoom` | 화면 크기 배율 (0.5 ~ 2.0) | 0.8 |
 
 ## 안전 정책
 
