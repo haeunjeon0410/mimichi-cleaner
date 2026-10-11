@@ -679,9 +679,12 @@ function Inv($r) {
 }
 function ToLogical($p) { New-Object Drawing.Point ([int][math]::Floor($p.X / $Sc)), ([int][math]::Floor($p.Y / $Sc)) }
 
-function TxtL($g, $t, $font, $hex, $x, $cy) { $g.DrawString($t, $font, (Br $hex), [single]$x, [single]($cy - $font.GetHeight($g) / 2), $sfT) }
+# LINE Seed는 줄 상자 아래쪽 여백이 커서, 줄 상자 기준으로 가운데 정렬하면 글자가 위로 치우쳐 보임.
+# 실측: 한글 글자 중심이 글자 크기의 약 0.26배만큼 위 -> 그만큼 내려서 시각적으로 가운데 정렬.
+$TextDrop = 0.265
+function TxtL($g, $t, $font, $hex, $x, $cy) { $g.DrawString($t, $font, (Br $hex), [single]$x, [single]($cy - $font.GetHeight($g) / 2 + $font.Size * $TextDrop), $sfT) }
 function TxtW($g, $t, $font) { $g.MeasureString($t, $font, 9999, $sfT).Width }
-function TxtC($g, $t, $font, $hex, $cx, $cy) { $w = TxtW $g $t $font; $g.DrawString($t, $font, (Br $hex), [single]($cx - $w / 2), [single]($cy - $font.GetHeight($g) / 2), $sfT) }
+function TxtC($g, $t, $font, $hex, $cx, $cy) { $w = TxtW $g $t $font; $g.DrawString($t, $font, (Br $hex), [single]($cx - $w / 2), [single]($cy - $font.GetHeight($g) / 2 + $font.Size * $TextDrop), $sfT) }
 
 function Draw-Search($g, $cx, $cy, $hex) {
     $p = Pn $hex 2.6
@@ -725,7 +728,7 @@ function Render-Static {
     $g.InterpolationMode = 'NearestNeighbor'; $g.PixelOffsetMode = 'Half'; $g.DrawImage($mimiBmp, 20, 9, 22, 24); $g.PixelOffsetMode = 'HighQuality'; $g.InterpolationMode = 'HighQualityBicubic'
     TxtL $g '미미치 청소 도우미' $fTitle $C.titleTxt 52 22
     # 인사말 / 제목
-    TxtL $g '안녕하세요, 미미치예요!' $fGreet $C.greet 43 82
+    TxtL $g '안녕하세요!' $fGreet $C.greet 43 82
     TxtL $g '느려진 PC를' $fHead $C.head 42 111
     TxtL $g '깨끗하게 정리해 드릴게요' $fHead $C.head 42 146
     TxtL $g '지금 바로 드라이브를 분석해서' $fSub $C.sub 43 181
@@ -839,7 +842,7 @@ $lv.Add_DrawColumnHeader({
     $g = $_.Graphics; $b = $_.Bounds
     $g.FillRectangle($brHeadBg, $b)
     $g.TextRenderingHint = 'AntiAlias'
-    $g.DrawString($_.Header.Text, $fList, $brHeadTxt, (New-Object Drawing.RectangleF(($b.Left + 8 * $Sc), $b.Top, ($b.Width - 10 * $Sc), $b.Height)), $sfCell)
+    $g.DrawString($_.Header.Text, $fList, $brHeadTxt, (New-Object Drawing.RectangleF(($b.Left + 8 * $Sc), ($b.Top + $fList.Size * $TextDrop), ($b.Width - 10 * $Sc), $b.Height)), $sfCell)
 })
 $lv.Add_DrawItem({ })
 $lv.Add_DrawSubItem({
@@ -848,7 +851,7 @@ $lv.Add_DrawSubItem({
     $fore = $brTag[$it.Tag.Key]
     if ($type -eq 'header') {
         $g.FillRectangle($brHdrRow, $b)
-        if ($e.ColumnIndex -eq 0) { $g.DrawString($it.Text, $fList, $fore, (New-Object Drawing.RectangleF(($b.Left + 8 * $Sc), $b.Top, ($b.Width + 300 * $Sc), $b.Height)), $sfCell) }
+        if ($e.ColumnIndex -eq 0) { $g.DrawString($it.Text, $fList, $fore, (New-Object Drawing.RectangleF(($b.Left + 8 * $Sc), ($b.Top + $fList.Size * $TextDrop), ($b.Width + 300 * $Sc), $b.Height)), $sfCell) }
         return
     }
     if ($it.Selected) { $g.FillRectangle($brSel, $b) } else { $g.FillRectangle($brRow, $b) }
@@ -862,7 +865,7 @@ $lv.Add_DrawSubItem({
         }
         $x0 = $b.Left + $gs.Width + 10 * $Sc
     }
-    $g.DrawString($e.SubItem.Text, $fList, $fore, (New-Object Drawing.RectangleF($x0, $b.Top, ($b.Right - $x0 - 4 * $Sc), $b.Height)), $sfCell)
+    $g.DrawString($e.SubItem.Text, $fList, $fore, (New-Object Drawing.RectangleF($x0, ($b.Top + $fList.Size * $TextDrop), ($b.Right - $x0 - 4 * $Sc), $b.Height)), $sfCell)
 })
 $lv.Add_ItemCheck({
     $it = $lv.Items[$_.Index]
@@ -947,7 +950,7 @@ $canvas.Add_Paint({
     if ($lc.IntersectsWith($rAn)) { Draw-Button $g $rAn '드라이브 분석하기' $anOn ($script:hover -eq 'an') $true }
     if ($lc.Y -lt 46) { Draw-TitleBtns $g }
     if ($lc.IntersectsWith($rFoot) -and $script:phase -in 'ready', 'cleaning') {
-        $g.DrawString($script:footerText, $fFoot, (Br $C.dTxt), (New-Object Drawing.RectangleF(50, ($rFoot.Y + 8), ($rCl.X - 64), 28)), $sfE)
+        $g.DrawString($script:footerText, $fFoot, (Br $C.dTxt), (New-Object Drawing.RectangleF(50, ($rFoot.Y + 8 + $fFoot.Size * $TextDrop), ($rCl.X - 64), 28)), $sfE)
         if ($script:phase -eq 'cleaning') {
             $bwid = $rCl.X - 80
             $bp = [Gfx]::Round(50, ($rFoot.Y + 44), $bwid, 14, 7); $g.FillPath((Br $C.dotOff), $bp); $bp.Dispose()
