@@ -844,6 +844,9 @@ function Rebuild { $script:lastRebuild = Get-Date; $old = $script:static; $scrip
 $mimiBmp = New-Object Drawing.Bitmap 44, 48
 $gm = [Drawing.Graphics]::FromImage($mimiBmp); Draw-Grid $gm $Grid 1 0 0; $gm.Dispose()
 
+# 작업표시줄에서 PowerShell과 묶이지 않도록 별도 앱 ID 지정 (창 아이콘이 그대로 표시됨)
+Add-Type -Namespace Mimi -Name Shell -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern int SetCurrentProcessExplicitAppUserModelID([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id);'
+[void][Mimi.Shell]::SetCurrentProcessExplicitAppUserModelID('Mimichi.Cleaner')
 $form = New-Object MimiForm
 $form.Text = '미미치 청소 도우미'; $form.FormBorderStyle = 'None'; $form.StartPosition = 'CenterScreen'
 $form.ClientSize = New-Object Drawing.Size ([int](900 * $Sc)), ([int](756 * $Sc)); $form.BackColor = HexC $C.winBg
