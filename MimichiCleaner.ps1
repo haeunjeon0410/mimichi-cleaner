@@ -223,11 +223,12 @@ $script:filling = $false
 if (-not $Dest) {
     $disk = [IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady -and $_.Name.Substring(0, 1) -ne $SL } |
         Sort-Object AvailableFreeSpace -Descending | Select-Object -First 1
-    if ($disk) { $Dest = Join-Path $disk.Name '정리대기' }
+    if ($disk) { $Dest = $disk.Name }
 }
 $script:DestOK = [bool]$Dest
 $DL = '?'; if ($Dest) { $DL = $Dest.Substring(0, 1).ToUpper() }
-$LogFile = $null; if ($Dest) { $LogFile = Join-Path $Dest 'log.csv' }
+$LogFile = $null; if ($Dest) { $LogFile = Join-Path $PSScriptRoot 'log.csv' }
+$script:IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 # ---------- 폰트 (fonts 폴더의 LINE Seed Sans KR을 프로세스 내에서만 사용, 없으면 맑은 고딕) ----------
 $script:pfc = New-Object Drawing.Text.PrivateFontCollection
@@ -600,14 +601,14 @@ function Get-RecycleSize {
 }
 function Write-Log($action, $src, $dst, $size) {
     if (-not $LogFile) { return }
-    [void][IO.Directory]::CreateDirectory($Dest)
     [pscustomobject]@{ Time = (Get-Date -Format s); Action = $action; From = $src; To = $dst; MB = [math]::Round($size / 1MB, 0) } |
         Export-Csv -Path $LogFile -Append -NoTypeInformation -Encoding UTF8
 }
+# 이동 위치: 원래 경로를 그대로 따라감 (C:\Users\a\b → D:\Users\a\b)
+function Dest-Path($src) { Join-Path $Dest $src.Substring(3) }
 function Move-OneFile($file) {
     try {
-        $rel = $file.Substring($UserHome.Length).TrimStart('\')
-        $target = Join-Path $Dest $rel
+        $target = Dest-Path $file
         [void][IO.Directory]::CreateDirectory((Split-Path $target))
         if ([IO.File]::Exists($target)) { $target = Join-Path (Split-Path $target) ((Get-Date -Format 'HHmmss') + '_' + (Split-Path $file -Leaf)) }
         $size = (New-Object IO.FileInfo $file).Length
@@ -620,14 +621,21 @@ function Move-OneFile($file) {
 # 순서: 복사 → 개수·용량 검증 → 원본 이름 변경 → 정션 생성 → 원본 삭제. 단계별 실패 시 원본 보존.
 function Move-FolderWithJunction($src) {
     $src = (Resolve-Path -LiteralPath $src).Path.TrimEnd('\')
-    if (-not $src.StartsWith($UserHome + '\')) { return '사용자 폴더 외부 (건너뜀)' }
+    if ($src.StartsWith($env:SystemRoot, [StringComparison]::OrdinalIgnoreCase)) { return 'Windows 폴더 (건너뜀)' }
+    if (-not $script:IsAdmin -and $src -match '^[A-Za-z]:\\(Program Files|ProgramData)') { return '관리자 권한 필요 (건너뜀)' }
     if ((Get-Item -LiteralPath $src -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { return '이미 정션 폴더 (건너뜀)' }
     if ($src -match '\\OneDrive(\\|$)' -or ($env:OneDrive -and $src.StartsWith($env:OneDrive, [StringComparison]::OrdinalIgnoreCase))) { return 'OneDrive 동기화 폴더 (건너뜀)' }
-    $dst = Join-Path $Dest ($src.Substring($UserHome.Length).TrimStart('\'))
+    $dst = Dest-Path $src
     if ([IO.Directory]::Exists($dst)) { return "대상 폴더가 이미 존재: $dst (건너뜀)" }
     $w1 = New-Walk $src
     if ($w1.Links -gt 0) { return '폴더 내 링크 존재 (건너뜀)' }
     if ((Free-Of $Dest) -lt ($w1.Total * 1.02 + 200MB)) { return '대상 드라이브 공간 부족 (건너뜀)' }
+    # 복사 전에 폴더 사용 여부 확인: 이름을 잠깐 바꿔 보고 되돌림 (사용 중이면 오래 복사하기 전에 중단)
+    $probe = "$src.mimichi-probe"
+    try { [IO.Directory]::Move($src, $probe); [IO.Directory]::Move($probe, $src) } catch {
+        if ([IO.Directory]::Exists($probe) -and -not [IO.Directory]::Exists($src)) { [IO.Directory]::Move($probe, $src) }
+        return '폴더 사용 중 (건너뜀). 해당 프로그램 종료 후 재시도'
+    }
     [void][IO.Directory]::CreateDirectory($dst)
     $p = Start-Process robocopy -ArgumentList "`"$src`" `"$dst`" /E /COPY:DAT /DCOPY:DAT /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP" -WindowStyle Hidden -PassThru
     $null = $p.Handle
@@ -862,8 +870,7 @@ Apply-Layout 900 756
 $groupDef = [ordered]@{
     'del'   = '삭제 가능 (재생성되는 항목)'
     'move'  = "이동 권장 (${DL} 드라이브)"
-    'check' = '확인 필요'
-    'keep'  = '변경 금지'
+    'keep'  = '그대로 둠 (변경 금지)'
 }
 $tagColor = @{ 'del' = '#2F8F5B'; 'move' = '#2E6FB0'; 'check' = '#A9780E'; 'keep' = '#C0453D' }
 $brTag = @{}; foreach ($kk in $tagColor.Keys) { $brTag[$kk] = New-Object Drawing.SolidBrush (HexC $tagColor[$kk]) }
@@ -1078,7 +1085,7 @@ function Fill-List {
             $it.ForeColor = HexC $tagColor[$k]
             $it.Tag = @{ Act = $r.Act; Size = $r.Size; Path = $r.Path; Key = $k }
             [void]$lv.Items.Add($it)
-            if ($r.Act.Type -eq 'cache') { $it.Checked = $true }
+            if ($r.Act.Type -in 'cache', 'recycle', 'movefiles', 'movefolder') { $it.Checked = $true }   # node_modules만 직접 선택
         }
     }
     $lv.EndUpdate()
@@ -1104,25 +1111,42 @@ function Start-Analyze {
         for ($i = 0; $i -lt $cache.Count; $i++) {
             Add-Row 'del' $cache[$i][0] $ws[$i].Total $cache[$i][1] @{ Type = 'cache'; Path = $cache[$i][0]; Days = $cache[$i][2] } $ws[$i].Truncated
         }
-        Add-Row 'del' '휴지통' (Get-RecycleSize) '휴지통 비우기 (기본 선택 안 됨)' @{ Type = 'recycle' }
+        Add-Row 'del' '휴지통' (Get-RecycleSize) '휴지통 비우기' @{ Type = 'recycle' }
 
         # (2/5) 시스템 파일: 크기를 재지 않고 안내만 해요 (파일이 수십만 개라 오래 걸려요)
         Say "살펴보는 중이에요 (2/5)`n시스템 파일은 보기만 할게요"
         foreach ($f in 'hiberfil.sys', 'pagefile.sys', 'swapfile.sys') {
             $item = Get-Item -LiteralPath "$SL`:\$f" -Force
             if ($item) {
-                if ($f -eq 'hiberfil.sys') { Add-Row 'check' $item.FullName $item.Length '최대 절전 파일. 미사용 시 관리자 권한으로 powercfg -h off 실행' @{ Type = 'info' } }
+                if ($f -eq 'hiberfil.sys') { Add-Row 'keep' $item.FullName $item.Length '최대 절전 파일. 미사용 시 관리자 CMD에서 powercfg -h off로 제거 가능' @{ Type = 'info' } }
                 else { Add-Row 'keep' $item.FullName $item.Length 'Windows 가상 메모리. 삭제 금지' @{ Type = 'info' } }
             }
         }
         $info = @{ Type = 'info' }
         if (Test-Path "$SL`:\Windows.old") {
             $w = New-Walk "$SL`:\Windows.old" -maxSec 20
-            Add-Row 'check' "$SL`:\Windows.old" $w.Total '이전 Windows 백업. 디스크 정리 > 이전 Windows 설치에서 삭제' $info $w.Truncated
+            Add-Row 'keep' "$SL`:\Windows.old" $w.Total '이전 Windows 백업. Windows 설정 > 저장소 > 임시 파일에서 삭제' $info $w.Truncated
         }
-        foreach ($sys in @(@("$SL`:\Program Files", '설치된 프로그램. 이동 시 실행 불가'), @("$SL`:\Program Files (x86)", '설치된 프로그램 (32비트)'),
-                           @("$SL`:\ProgramData", '프로그램 공용 데이터'), @($env:SystemRoot, 'Windows 시스템'))) {
+        foreach ($sys in @(@("$SL`:\ProgramData", '프로그램 공용 데이터'), @($env:SystemRoot, 'Windows 시스템'))) {
             Add-Row 'keep' $sys[0] 0 $sys[1] $info -Always
+        }
+
+        # (2.5/5) Program Files: 게임·개발 도구만 이동 대상, 나머지(Windows 구성요소·보안·드라이버 등)는 그대로
+        $pfAllow = 'Steam|Epic Games|Smilegate|Nexon|Riot|Battle\.net|Blizzard|Ubisoft|Origin|^EA|Netmarble|NCSoft|Unity|JetBrains|Android|RStudio'
+        $pfDirs = @()
+        foreach ($pf in "$SL`:\Program Files (x86)", "$SL`:\Program Files") {
+            $pfDirs += @(Get-ChildItem $pf -Directory -Force | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+        }
+        $ws = @($pfDirs | ForEach-Object { New-W $_.FullName -maxSec 25 })
+        Run-Walkers $ws '(2/5)' '설치된 프로그램 크기를 재고 있어요'
+        for ($i = 0; $i -lt $pfDirs.Count; $i++) {
+            $d = $pfDirs[$i]; $sz = $ws[$i].Total
+            if ($sz -lt 500MB) { continue }
+            if ($d.Name -match $pfAllow) {
+                Add-Row 'move' $d.FullName $sz "게임·개발 도구. ${DL}로 이동 후 원래 경로로 계속 사용 (실행 중이면 종료 필요)" @{ Type = 'movefolder'; Path = $d.FullName } $ws[$i].Truncated
+            } else {
+                Add-Row 'keep' $d.FullName $sz '설치된 프로그램·시스템 구성요소. 이동 시 오류 위험' $info $ws[$i].Truncated
+            }
         }
 
         # (3/5) AppData
@@ -1132,22 +1156,25 @@ function Start-Analyze {
         Run-Walkers $ws '(3/5)' 'AppData를 둘러보는 중이에요'
         for ($i = 0; $i -lt $dirs.Count; $i++) {
             $d = $dirs[$i]; $sz = $ws[$i].Total; $tr = $ws[$i].Truncated
-            if ($sz -lt 200MB) { continue }
+            if ($sz -lt 300MB) { continue }
             switch -Regex ($d.Name) {
-                '^Packages$' { Add-Row 'keep' $d.FullName $sz 'Microsoft Store 앱 데이터' $info $tr }
-                'Docker|wsl' { Add-Row 'keep' $d.FullName $sz 'Docker/WSL 가상 디스크. 직접 이동 시 손상' $info $tr }
+                '^Packages$' { Add-Row 'keep' $d.FullName $sz 'Microsoft Store 앱 데이터. 이동 시 앱 오류' $info $tr }
+                'Docker|wsl' { Add-Row 'keep' $d.FullName $sz 'Docker/WSL 가상 디스크. 이동 시 손상 위험' $info $tr }
                 '^Programs$' { Add-Row 'keep' $d.FullName $sz '사용자 설치 프로그램' $info $tr }
-                '^Microsoft$' { Add-Row 'keep' $d.FullName $sz 'Windows/Office/Edge 데이터' $info $tr }
-                '^(Google|BraveSoftware)$' { Add-Row 'keep' $d.FullName $sz '브라우저 프로필(로그인/북마크)' $info $tr }
-                '^(Steam|Epic)' { Add-Row 'move' $d.FullName $sz "게임 런처. 런처 설정에서 라이브러리 위치를 ${DL}로 변경 (자동 이동 불가)" $info $tr }
-                default { Add-Row 'check' $d.FullName $sz '프로그램 데이터. 용도 확인 후 판단' $info $tr }
+                '^Microsoft$' { Add-Row 'keep' $d.FullName $sz 'Windows·Office·Edge 데이터' $info $tr }
+                '^(Google|BraveSoftware)$' { Add-Row 'keep' $d.FullName $sz '브라우저 프로필(로그인·북마크)' $info $tr }
+                '^(NVIDIA|Intel|AMD|Comms|ConnectedDevices|VirtualStore|Publishers|SquirrelTemp|Temp)' { Add-Row 'keep' $d.FullName $sz '드라이버·시스템 데이터' $info $tr }
+                default { Add-Row 'move' $d.FullName $sz "프로그램 데이터. ${DL}로 이동 후 원래 경로로 계속 사용 (실행 중이면 종료 필요)" @{ Type = 'movefolder'; Path = $d.FullName } $tr }
             }
         }
         $dirs = @(Get-ChildItem $env:APPDATA -Directory -Force | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
         $ws = @($dirs | ForEach-Object { New-W $_.FullName -maxSec 4 })
         Run-Walkers $ws '(3/5)' 'AppData(Roaming)를 둘러보고 있어요'
         for ($i = 0; $i -lt $dirs.Count; $i++) {
-            Add-Row 'check' $dirs[$i].FullName $ws[$i].Total 'Roaming 프로그램 데이터. 어떤 프로그램 건지 확인 후 판단' $info $ws[$i].Truncated
+            if ($ws[$i].Total -lt 300MB) { continue }
+            if ($dirs[$i].Name -match '^(Claude|Anthropic.*)$') { continue }   # 이 프로그램을 띄운 앱 자신의 데이터
+            if ($dirs[$i].Name -match '^(Microsoft|Packages)$') { Add-Row 'keep' $dirs[$i].FullName $ws[$i].Total 'Windows·Office 데이터' $info $ws[$i].Truncated; continue }
+            Add-Row 'move' $dirs[$i].FullName $ws[$i].Total "프로그램 데이터. ${DL}로 이동 후 원래 경로로 계속 사용 (실행 중이면 종료 필요)" @{ Type = 'movefolder'; Path = $dirs[$i].FullName } $ws[$i].Truncated
         }
 
         # (4/5) 프로젝트 폴더 (바탕화면/문서의 하위 폴더 중 300MB 이상)
@@ -1218,7 +1245,7 @@ function Start-Clean {
     $nDel = @($checked | Where-Object { $_.Tag.Act.Type -in 'cache', 'recycle', 'nodemodules' }).Count
     $nMove = $checked.Count - $nDel
     $hasFolder = @($checked | Where-Object { $_.Tag.Act.Type -eq 'movefolder' }).Count -gt 0
-    $msg = "삭제 ${nDel}건, 이동 ${nMove}건을 진행할까요?`n`n옮기는 파일은 $Dest 에 보관되고, 지우지 않아요."
+    $msg = "삭제 ${nDel}건, 이동 ${nMove}건을 진행할까요?`n`n옮기는 항목은 $Dest 의 같은 경로로 옮겨지고, 폴더는 원래 경로 그대로 열려요.`n옮기려는 폴더를 쓰는 프로그램(Steam, VS Code 등)은 먼저 닫아 주세요. 실행 중인 건 건너뛰어요."
     if ($hasFolder) { $msg += "`n폴더를 옮기려면 그 폴더를 쓰는 프로그램(VS Code, 터미널 등)을 먼저 닫아 주세요." }
     if ($DryRun) { $msg += "`n`n[미리보기 모드] 실제로는 아무것도 지우거나 옮기지 않아요." }
     if ((Ask $msg) -ne 'Yes') { return }
@@ -1245,7 +1272,7 @@ function Start-Clean {
         }
         Refresh-Free
         $gain = (Get-PSDrive $SL).Free - $before
-        $txt = "정리가 끝났어요!`n$SL 드라이브 여유 공간이 {0} GB 늘었어요`n옮긴 파일은 $Dest 에 있고, 기록은 log.csv에 남겼어요" -f (GB $gain)
+        $txt = "정리가 끝났어요!`n$SL 드라이브 여유 공간이 {0} GB 늘었어요`n옮긴 항목은 $Dest 의 같은 경로에 있고, 기록은 log.csv에 남겼어요" -f (GB $gain)
         if ($DryRun) { $txt = "미리보기가 끝났어요`n실제로는 아무것도 바꾸지 않았어요`n어떤 항목이었는지는 log.csv에 남겼어요" }
         if ($fails.Count -gt 0) { $txt += "`n건너뛰었거나 실패한 항목 $($fails.Count)건: $($fails[0])" }
         $lv.Items.Clear(); $script:sayText = $txt; Set-Phase 'done'
@@ -1292,7 +1319,7 @@ function Run-SelfTest {
     foreach ($d in @(@('del', $env:TEMP, 3GB, '임시', @{ Type = 'cache' }), @('move', "$UserHome\Videos", 5GB, '큰 파일', @{ Type = 'movefiles' }), @('keep', $env:SystemRoot, 30GB, '본체', @{ Type = 'info' }))) { Add-Row $d[0] $d[1] $d[2] $d[3] $d[4] }
     Fill-List; Set-Phase 'ready'; Pump-Ms 300
     T "결과 단계: 목록이 보이고 행이 채워짐 (행 $($lv.Items.Count))" ($lv.Visible -and $lv.Items.Count -ge 5)
-    T "임시파일 항목은 기본 체크, 큰 파일은 해제" ($lv.CheckedItems.Count -eq 1)
+    T "삭제·이동 항목은 기본 체크, 안내 항목은 해제" ($lv.CheckedItems.Count -eq 2)
     Mouse 'OnMouseMove' ($rCl.X + 10) ($rCl.Y + 10)
     T "결과 단계에서는 '청소 시작' 버튼이 반응함 (hover '$($script:hover)')" ($script:hover -eq 'cl')
     foreach ($ph in 'analyzing', 'cleaning', 'done', 'before') { Set-Phase $ph; Pump-Ms 150 }
@@ -1369,13 +1396,13 @@ if ($Snapshot) {
         @('del', "$UserHome\Desktop 의 node_modules (4개)", 1.1GB, 'npm install로 재생성 가능. 미사용 프로젝트만 선택', @{ Type = 'nodemodules' }),
         @('move', "$UserHome\Videos (8개 파일)", 14.5GB, "${MinMB}MB 이상 대용량 파일. 예: record.mp4, trip.mov", @{ Type = 'movefiles' }),
         @('move', "$UserHome\Documents\old-project", 6.3GB, "대용량 폴더. ${DL}로 이동 후 원래 위치에 정션 생성 (경로 유지)", @{ Type = 'movefolder' }),
-        @('check', "$env:APPDATA\SomeApp", 1.2GB, '프로그램 데이터. 용도 확인 후 판단', @{ Type = 'info' }),
+        @('move', "$env:APPDATA\SomeApp", 1.2GB, "프로그램 데이터. ${DL}로 이동 후 원래 경로로 계속 사용 (실행 중이면 종료 필요)", @{ Type = 'movefolder' }),
         @('keep', $env:SystemRoot, 30GB, 'Windows 시스템', @{ Type = 'info' })
     )
     foreach ($d in $demo) { Add-Row $d[0] $d[1] $d[2] $d[3] $d[4] }
     Fill-List
     $script:prog = 0.6; $script:frame = $SnapFrame
-    if ($SnapPhase -eq 'done') { $script:sayText = "정리가 끝났어요!`n$SL 드라이브 여유 공간이 12.4 GB 늘었어요`n옮긴 파일은 $DL`:\정리대기 에 있고, 기록은 log.csv에 남겼어요"; $lv.Items.Clear() }
+    if ($SnapPhase -eq 'done') { $script:sayText = "정리가 끝났어요!`n$SL 드라이브 여유 공간이 12.4 GB 늘었어요`n옮긴 항목은 $DL`:\ 의 같은 경로에 있고, 기록은 log.csv에 남겼어요"; $lv.Items.Clear() }
     if ($SnapPhase -eq 'analyzing') { $script:sayText = "살펴보는 중이에요 (3/5)`nAppData를 둘러보는 중이에요" }
     Set-Phase $SnapPhase
     $form.Show()

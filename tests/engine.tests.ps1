@@ -9,7 +9,7 @@ function Pump { }
 function GB($b) { [math]::Round($b / 1GB, 2) }
 $id = [guid]::NewGuid().ToString('N').Substring(0, 6)
 $UserHome = Join-Path $Work "fakehome_$id"
-$Dest = Join-Path $Work "fakedest_$id"
+$Dest = Join-Path $Work "fakedest_$id"; $script:IsAdmin = $true
 $LogFile = Join-Path $Dest 'log.csv'
 [void][IO.Directory]::CreateDirectory($UserHome)
 Invoke-Expression $eng
@@ -28,10 +28,10 @@ Check "비어 버린 하위 폴더 정리" (-not [IO.Directory]::Exists("$t\sub"
 "[2] Move-OneFile"
 Mk "$UserHome\Videos\a.mp4" 4000
 $r = Move-OneFile "$UserHome\Videos\a.mp4"
-Check "파일이 정리대기로 이동" ($r -eq $true -and -not [IO.File]::Exists("$UserHome\Videos\a.mp4") -and [IO.File]::Exists("$Dest\Videos\a.mp4"))
-Mk "$UserHome\Videos\b.mp4" 100; Mk "$Dest\Videos\b.mp4" 50
+Check "파일이 같은 경로로 이동" ($r -eq $true -and -not [IO.File]::Exists("$UserHome\Videos\a.mp4") -and [IO.File]::Exists((Dest-Path "$UserHome\Videos\a.mp4")))
+Mk "$UserHome\Videos\b.mp4" 100; Mk (Dest-Path "$UserHome\Videos\b.mp4") 50
 $r = Move-OneFile "$UserHome\Videos\b.mp4"
-Check "이름이 겹치면 덮어쓰지 않고 이름 변경해서 이동" ($r -eq $true -and [IO.File]::Exists("$Dest\Videos\b.mp4") -and (Get-ChildItem "$Dest\Videos" -Filter '*_b.mp4').Count -eq 1)
+Check "이름이 겹치면 덮어쓰지 않고 이름 변경해서 이동" ($r -eq $true -and [IO.File]::Exists((Dest-Path "$UserHome\Videos\b.mp4")) -and (Get-ChildItem (Split-Path (Dest-Path "$UserHome\Videos\b.mp4")) -Filter '*_b.mp4').Count -eq 1)
 Check "없는 파일은 실패로 처리" ((Move-OneFile "$UserHome\nope.txt") -eq $false)
 
 "[3] Move-FolderWithJunction (정상)"
@@ -42,7 +42,7 @@ Check "성공 메시지 없음 (msg='$msg')" ($msg -eq '')
 $item = Get-Item -LiteralPath $p -Force
 Check "원래 경로가 링크(정션)로 남음" (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
 Check "링크를 통해 원본 파일이 그대로 보임" ([IO.File]::Exists("$p\sub\b.bin") -and [IO.File]::Exists("$p\sub\deep\c.txt"))
-Check "실제 파일은 정리대기에 있음" ([IO.File]::Exists("$Dest\Desktop\proj\sub\b.bin"))
+Check "실제 파일은 대상 드라이브의 같은 경로에 있음" ([IO.File]::Exists((Dest-Path "$p\sub\b.bin")))
 Check "옛 폴더(.mimichi-old) 남지 않음" (-not [IO.Directory]::Exists("$p.mimichi-old"))
 Check "로그 기록됨" ((Get-Content $LogFile -Raw) -match 'move\+junction')
 "[3b] 다시 분석하면 링크는 따라가지 않아요"
@@ -56,9 +56,13 @@ $q = "$UserHome\Documents\withlink"
 Mk "$q\x.txt" 10; Mk "$UserHome\other\y.txt" 10
 New-Item -ItemType Junction -Path "$q\inner" -Target "$UserHome\other" | Out-Null
 $msg = Move-FolderWithJunction $q
-Check "폴더 안에 링크가 있으면 건너뜀 ('$msg')" ($msg -like '*링크*' -and [IO.File]::Exists("$q\x.txt") -and -not [IO.Directory]::Exists("$Dest\Documents\withlink"))
-$msg = Move-FolderWithJunction "$Work"
-Check "사용자 폴더 밖은 건너뜀 ('$msg')" ($msg -like '*외부*')
+Check "폴더 안에 링크가 있으면 건너뜀 ('$msg')" ($msg -like '*링크*' -and [IO.File]::Exists("$q\x.txt") -and -not [IO.Directory]::Exists((Dest-Path $q)))
+$msg = Move-FolderWithJunction "$env:SystemRoot\Fonts"
+Check "Windows 폴더는 건너뜀 ('$msg')" ($msg -like '*Windows*')
+$script:IsAdmin = $false
+$msg = Move-FolderWithJunction "$env:SystemDrive\Program Files"
+Check "관리자가 아니면 Program Files는 건너뜀 ('$msg')" ($msg -like '*관리자*')
+$script:IsAdmin = $true
 
 $lk = "$UserHome\Documents\locked"
 Mk "$lk\held.txt" 100; Mk "$lk\free.txt" 100
@@ -66,7 +70,7 @@ $fs = [IO.File]::Open("$lk\held.txt", 'Open', 'ReadWrite', 'None')
 $msg = Move-FolderWithJunction $lk
 $fs.Close()
 Check "사용 중인 파일이 있으면 원본을 그대로 두고 실패 ('$msg')" ($msg -ne '' -and [IO.File]::Exists("$lk\held.txt") -and [IO.File]::Exists("$lk\free.txt") -and -not ((Get-Item -LiteralPath $lk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint))
-Check "실패 후 정리대기에 반쪽 복사본이 남지 않음" (-not [IO.Directory]::Exists("$Dest\Documents\locked"))
+Check "실패 후 대상에 반쪽 복사본이 남지 않음" (-not [IO.Directory]::Exists((Dest-Path $lk)))
 $msg2 = Move-FolderWithJunction $lk
 Check "프로그램을 닫은 뒤 다시 하면 성공 ('$msg2')" ($msg2 -eq '' -and ((Get-Item -LiteralPath $lk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
 
@@ -89,13 +93,13 @@ $b = [BatchScan]::new([Walker[]]$ws, 6); $t0 = Get-Date; while (-not $b.Done -an
 Check "병렬 12개가 모두 끝남 (완료 $($b.Completed))" ($b.Done -and $b.Completed -eq 12)
 Check "병렬 결과 == 순차 결과" ((($ws | ForEach-Object { $_.Total }) -join ',') -eq ($seq -join ','))
 Check "빈 목록도 바로 끝남" ([BatchScan]::new([Walker[]]@(), 6).Done)
-Check "시간 상한이 동작 (System32를 0.3초만 훑으면 Truncated)" ((New-Walk "$env:SystemRoot\System32" -maxSec 0.3).Truncated)
+Check "시간 상한이 동작 (WinSxS를 0.05초만 훑으면 Truncated)" ((New-Walk "$env:SystemRoot\WinSxS" -maxSec 0.05).Truncated)
 [IO.Directory]::Delete("$pr\d3\lnk")
 
 "[7] OneDrive 폴더는 옮기지 않아요"
 Mk "$UserHome\OneDrive\Docs\a.txt" 10
 $msg = Move-FolderWithJunction "$UserHome\OneDrive\Docs"
-Check "OneDrive 폴더 건너뜀 ('$msg')" ($msg -like '*OneDrive*' -and [IO.File]::Exists("$UserHome\OneDrive\Docs\a.txt") -and -not [IO.Directory]::Exists("$Dest\OneDrive"))
+Check "OneDrive 폴더 건너뜀 ('$msg')" ($msg -like '*OneDrive*' -and [IO.File]::Exists("$UserHome\OneDrive\Docs\a.txt") -and -not [IO.Directory]::Exists((Dest-Path "$UserHome\OneDrive\Docs")))
 "결과: PASS $ok / FAIL $bad"
 # 정리 (링크는 링크만 지워요)
 foreach ($l in "$UserHome\Desktop\proj", "$UserHome\Documents\locked", "$UserHome\Documents\withlink\inner") { if ([IO.Directory]::Exists($l)) { try { [IO.Directory]::Delete($l) } catch { } } }
