@@ -78,6 +78,24 @@ Remove-Tree $nm
 Check "node_modules 삭제됨" (-not [IO.Directory]::Exists($nm))
 Check "링크가 가리키던 폴더의 파일은 안전" ([IO.File]::Exists("$UserHome\keepme\important.txt"))
 
+
+"[6] 병렬 스캔(BatchScan)은 순차 스캔과 같은 결과"
+$pr = "$UserHome\parallel"
+foreach ($i in 1..12) { Mk "$pr\d$i\f$i.bin" (1000 * $i); Mk "$pr\d$i\sub\g.bin" 77 }
+New-Item -ItemType Junction -Path "$pr\d3\lnk" -Target "$UserHome\keepme" | Out-Null
+$seq = @(1..12 | ForEach-Object { (New-Walk "$pr\d$_").Total })
+$ws = @(1..12 | ForEach-Object { New-W "$pr\d$_" })
+$b = [BatchScan]::new([Walker[]]$ws, 6); $t0 = Get-Date; while (-not $b.Done -and ((Get-Date) - $t0).TotalSeconds -lt 20) { Start-Sleep -Milliseconds 20 }
+Check "병렬 12개가 모두 끝남 (완료 $($b.Completed))" ($b.Done -and $b.Completed -eq 12)
+Check "병렬 결과 == 순차 결과" ((($ws | ForEach-Object { $_.Total }) -join ',') -eq ($seq -join ','))
+Check "빈 목록도 바로 끝남" ([BatchScan]::new([Walker[]]@(), 6).Done)
+Check "시간 상한이 동작 (System32를 0.3초만 훑으면 Truncated)" ((New-Walk "$env:SystemRoot\System32" -maxSec 0.3).Truncated)
+[IO.Directory]::Delete("$pr\d3\lnk")
+
+"[7] OneDrive 폴더는 옮기지 않아요"
+Mk "$UserHome\OneDrive\Docs\a.txt" 10
+$msg = Move-FolderWithJunction "$UserHome\OneDrive\Docs"
+Check "OneDrive 폴더 건너뜀 ('$msg')" ($msg -like '*OneDrive*' -and [IO.File]::Exists("$UserHome\OneDrive\Docs\a.txt") -and -not [IO.Directory]::Exists("$Dest\OneDrive"))
 "결과: PASS $ok / FAIL $bad"
 # 정리 (링크는 링크만 지워요)
 foreach ($l in "$UserHome\Desktop\proj", "$UserHome\Documents\locked", "$UserHome\Documents\withlink\inner") { if ([IO.Directory]::Exists($l)) { try { [IO.Directory]::Delete($l) } catch { } } }

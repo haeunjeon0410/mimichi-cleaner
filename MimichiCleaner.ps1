@@ -19,6 +19,7 @@ param(
     [double]$Zoom = 0.8,
     [switch]$MakeIcon,
     [switch]$AutoAnalyze,
+    [switch]$DryRun,
     [switch]$SelfTest,
     [string]$Snapshot,
     [string]$SnapPhase = 'ready',
@@ -152,6 +153,28 @@ public class Walker {
         }
     }
 }
+
+// 여러 Walker를 스레드 몇 개로 동시에 돌려요 (폴더 크기 측정을 빠르게)
+public class BatchScan {
+    Walker[] list; int next = -1, completed;
+    public int Completed { get { return completed; } }
+    public bool Done { get { return completed >= list.Length; } }
+    public BatchScan(Walker[] walkers, int threads) {
+        list = walkers;
+        int n = Math.Min(threads, Math.Max(1, walkers.Length));
+        for (int t = 0; t < n; t++) {
+            System.Threading.Thread th = new System.Threading.Thread(Worker);
+            th.IsBackground = true; th.Start();
+        }
+    }
+    void Worker() {
+        int i;
+        while ((i = System.Threading.Interlocked.Increment(ref next)) < list.Length) {
+            try { Walker w = list[i]; while (!w.Done) w.Step(50); } catch { }
+            System.Threading.Interlocked.Increment(ref completed);
+        }
+    }
+}
 public static class Gfx {
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int msg, int w, int l);
@@ -198,9 +221,9 @@ $script:filling = $false
 
 # 이동 대상: 미지정 시 시스템 드라이브 외 고정 드라이브 중 여유 공간이 가장 큰 드라이브
 if (-not $Dest) {
-    $disk = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Where-Object { $_.DeviceID.TrimEnd(':') -ne $SL } |
-        Sort-Object FreeSpace -Descending | Select-Object -First 1
-    if ($disk) { $Dest = Join-Path ($disk.DeviceID + '\') '정리대기' }
+    $disk = [IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady -and $_.Name.Substring(0, 1) -ne $SL } |
+        Sort-Object AvailableFreeSpace -Descending | Select-Object -First 1
+    if ($disk) { $Dest = Join-Path $disk.Name '정리대기' }
 }
 $script:DestOK = [bool]$Dest
 $DL = '?'; if ($Dest) { $DL = $Dest.Substring(0, 1).ToUpper() }
@@ -550,7 +573,7 @@ function Draw-Illus($g, $ox, $oy) {
 
 # ---------- 청소 엔진 ----------
 # 폴더 순회는 Walker(C#)가 전담. 링크(정션)를 따라가지 않으므로 이미 이동한 폴더를 재집계·삭제하지 않음.
-function New-Walk($path, $min = 0, $olderDays = 0, $exts = $null, $findDir = $null, $maxDepth = 99, $exclude = @(), [switch]$Delete, $maxSec = 0) {
+function New-W($path, $min = 0, $olderDays = 0, $exts = $null, $findDir = $null, $maxDepth = 99, $exclude = @(), [switch]$Delete, $maxSec = 0) {
     $w = New-Object Walker $path
     $w.MaxMs = [int]($maxSec * 1000)
     if ($min -gt 0) { $w.MinBytes = [long]$min }
@@ -560,6 +583,10 @@ function New-Walk($path, $min = 0, $olderDays = 0, $exts = $null, $findDir = $nu
     $w.MaxDepth = $maxDepth
     foreach ($x in $exclude) { [void]$w.Exclude.Add($x) }
     $w.Delete = [bool]$Delete
+    $w
+}
+function New-Walk($path, $min = 0, $olderDays = 0, $exts = $null, $findDir = $null, $maxDepth = 99, $exclude = @(), [switch]$Delete, $maxSec = 0) {
+    $w = New-W @PSBoundParameters
     while (-not $w.Done) { $w.Step(30); Pump }
     $w
 }
@@ -595,6 +622,7 @@ function Move-FolderWithJunction($src) {
     $src = (Resolve-Path -LiteralPath $src).Path.TrimEnd('\')
     if (-not $src.StartsWith($UserHome + '\')) { return '사용자 폴더 외부 (건너뜀)' }
     if ((Get-Item -LiteralPath $src -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { return '이미 정션 폴더 (건너뜀)' }
+    if ($src -match '\\OneDrive(\\|$)' -or ($env:OneDrive -and $src.StartsWith($env:OneDrive, [StringComparison]::OrdinalIgnoreCase))) { return 'OneDrive 동기화 폴더 (건너뜀)' }
     $dst = Join-Path $Dest ($src.Substring($UserHome.Length).TrimStart('\'))
     if ([IO.Directory]::Exists($dst)) { return "대상 폴더가 이미 존재: $dst (건너뜀)" }
     $w1 = New-Walk $src
@@ -801,7 +829,8 @@ function Render-Static {
     $bmp
 }
 $script:static = $null
-function Rebuild { $old = $script:static; $script:static = Render-Static; if ($old) { $old.Dispose() }; $canvas.Invalidate() }
+$script:lastRebuild = [DateTime]::MinValue
+function Rebuild { $script:lastRebuild = Get-Date; $old = $script:static; $script:static = Render-Static; if ($old) { $old.Dispose() }; $canvas.Invalidate() }
 
 # ---------- 폼 / 캔버스 ----------
 $mimiBmp = New-Object Drawing.Bitmap 44, 48
@@ -890,7 +919,7 @@ function Refresh-Free {
 function Say($text) {
     $script:sayText = $text
     if ($script:trace) { Add-Content -Path $script:trace -Value ('{0:HH:mm:ss.fff}  {1}' -f (Get-Date), ($text -replace "`n", ' | ')) }
-    if ($script:phase -in 'ready', 'cleaning') { $script:footerText = ($text -replace "`n", '   '); Inv $rFoot } else { Rebuild }
+    if ($script:phase -in 'ready', 'cleaning') { $script:footerText = ($text -replace "`n", '   '); Inv $rFoot } elseif (((Get-Date) - $script:lastRebuild).TotalMilliseconds -gt 150) { Rebuild }   # 화면 갱신은 0.15초에 한 번만
 }
 function Update-Sum {
     if ($script:filling) { return }
@@ -1025,7 +1054,14 @@ function Add-Row($tag, $path, $size, $why, $act, $trunc = $false, [switch]$Alway
     if (-not $script:DestOK -and $act.Type -in 'movefiles', 'movefolder') { $act = @{ Type = 'info' }; $why += ' (이동할 드라이브 없음)' }
     $script:rows += [pscustomobject]@{ Tag = $tag; Path = $path; Size = $size; Why = $why; Act = $act }
 }
-function Scan-Size($path, $sec, $days = 0) { $w = New-Walk $path -maxSec $sec -olderDays $days; @{ Size = $w.Total; Trunc = $w.Truncated } }
+# 여러 폴더를 동시에(스레드 6개) 훑어요. 화면은 그동안 계속 갱신돼요.
+function Run-Walkers($walkers, $step, $what) {
+    $b = [BatchScan]::new([Walker[]]$walkers, 6)
+    while (-not $b.Done) {
+        Say ("살펴보는 중이에요... {0}`n{1} ({2}/{3})" -f $step, $what, $b.Completed, $walkers.Count)
+        Start-Sleep -Milliseconds 150; Pump
+    }
+}
 function Fill-List {
     $script:filling = $true
     $lv.BeginUpdate(); $lv.Items.Clear()
@@ -1053,9 +1089,9 @@ function Start-Analyze {
     Set-Phase 'analyzing'; $script:rows = @(); $lv.Items.Clear()
     $L = $env:LOCALAPPDATA
     try {
-        Say "살펴보는 중이에요 (1/5)`n임시 파일과 캐시를 확인하고 있어요"
+        # (1/5) 임시파일과 캐시
         $cache = @(
-            @($env:TEMP, '사용자 임시 파일 (2일 경과분)', 2), @("$env:SystemRoot\Temp", 'Windows 임시 파일 (2일 경과분, 일부 관리자 권한 필요)', 2),
+            @($env:TEMP, '사용자 임시 파일 (7일 경과분)', 7), @("$env:SystemRoot\Temp", 'Windows 임시 파일 (7일 경과분, 일부 관리자 권한 필요)', 7),
             @("$L\CrashDumps", '프로그램 충돌 기록', 0), @("$L\D3DSCache", '그래픽 셰이더 캐시 (재생성)', 0),
             @("$L\npm-cache", 'npm 캐시 (재다운로드)', 0), @("$L\pip\Cache", 'pip 캐시 (재다운로드)', 0),
             @("$L\Yarn\Cache", 'yarn 캐시 (재다운로드)', 0),
@@ -1063,9 +1099,14 @@ function Start-Analyze {
             @("$L\Microsoft\Edge\User Data\Default\Cache", 'Edge 캐시 (로그인·북마크 유지)', 0),
             @("$L\Microsoft\Windows\INetCache", '인터넷 임시 파일', 0), @("$L\Microsoft\Windows\WER", 'Windows 오류 보고서', 0)
         )
-        foreach ($ce in $cache) { $r = Scan-Size $ce[0] 8 $ce[2]; Add-Row 'del' $ce[0] $r.Size $ce[1] @{ Type = 'cache'; Path = $ce[0]; Days = $ce[2] } $r.Trunc }
+        $ws = @($cache | ForEach-Object { New-W $_[0] -olderDays $_[2] -maxSec 20 })
+        Run-Walkers $ws '(1/5)' '임시 파일과 캐시를 확인하고 있어요'
+        for ($i = 0; $i -lt $cache.Count; $i++) {
+            Add-Row 'del' $cache[$i][0] $ws[$i].Total $cache[$i][1] @{ Type = 'cache'; Path = $cache[$i][0]; Days = $cache[$i][2] } $ws[$i].Truncated
+        }
         Add-Row 'del' '휴지통' (Get-RecycleSize) '휴지통 비우기 (기본 선택 안 됨)' @{ Type = 'recycle' }
 
+        # (2/5) 시스템 파일: 크기를 재지 않고 안내만 해요 (파일이 수십만 개라 오래 걸려요)
         Say "살펴보는 중이에요 (2/5)`n시스템 파일은 보기만 할게요"
         foreach ($f in 'hiberfil.sys', 'pagefile.sys', 'swapfile.sys') {
             $item = Get-Item -LiteralPath "$SL`:\$f" -Force
@@ -1074,25 +1115,23 @@ function Start-Analyze {
                 else { Add-Row 'keep' $item.FullName $item.Length 'Windows 가상 메모리. 삭제 금지' @{ Type = 'info' } }
             }
         }
-        if (Test-Path "$SL`:\Windows.old") {
-            $r = Scan-Size "$SL`:\Windows.old" 20
-            Add-Row 'check' "$SL`:\Windows.old" $r.Size '이전 Windows 백업. 디스크 정리 > 이전 Windows 설치에서 삭제' @{ Type = 'info' } $r.Trunc
-        }
         $info = @{ Type = 'info' }
-        # 시스템 폴더는 안내만 표시 (파일 수가 많아 크기를 측정하지 않음)
+        if (Test-Path "$SL`:\Windows.old") {
+            $w = New-Walk "$SL`:\Windows.old" -maxSec 20
+            Add-Row 'check' "$SL`:\Windows.old" $w.Total '이전 Windows 백업. 디스크 정리 > 이전 Windows 설치에서 삭제' $info $w.Truncated
+        }
         foreach ($sys in @(@("$SL`:\Program Files", '설치된 프로그램. 이동 시 실행 불가'), @("$SL`:\Program Files (x86)", '설치된 프로그램 (32비트)'),
                            @("$SL`:\ProgramData", '프로그램 공용 데이터'), @($env:SystemRoot, 'Windows 시스템'))) {
             Add-Row 'keep' $sys[0] 0 $sys[1] $info -Always
         }
 
-        Say "살펴보는 중이에요 (3/5)`nAppData를 둘러보는 중이에요"
+        # (3/5) AppData
         $skip = 'Temp', 'CrashDumps', 'D3DSCache', 'npm-cache', 'pip', 'Yarn'
-        $t3 = Get-Date   # AppData는 폴더 수가 많아 전체 100초까지만 측정
-        foreach ($d in Get-ChildItem $L -Directory -Force) {
-            if ($skip -contains $d.Name -or ($d.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
-            if (((Get-Date) - $t3).TotalSeconds -gt 100) { break }
-            Say "살펴보는 중이에요 (3/5)`nAppData: $($d.Name)"
-            $r = Scan-Size $d.FullName 4; $sz = $r.Size; $tr = $r.Trunc
+        $dirs = @(Get-ChildItem $L -Directory -Force | Where-Object { $skip -notcontains $_.Name -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+        $ws = @($dirs | ForEach-Object { New-W $_.FullName -maxSec 6 })
+        Run-Walkers $ws '(3/5)' 'AppData를 둘러보는 중이에요'
+        for ($i = 0; $i -lt $dirs.Count; $i++) {
+            $d = $dirs[$i]; $sz = $ws[$i].Total; $tr = $ws[$i].Truncated
             if ($sz -lt 200MB) { continue }
             switch -Regex ($d.Name) {
                 '^Packages$' { Add-Row 'keep' $d.FullName $sz 'Microsoft Store 앱 데이터' $info $tr }
@@ -1104,42 +1143,44 @@ function Start-Analyze {
                 default { Add-Row 'check' $d.FullName $sz '프로그램 데이터. 용도 확인 후 판단' $info $tr }
             }
         }
-        $t3 = Get-Date
-        foreach ($d in Get-ChildItem $env:APPDATA -Directory -Force) {
-            if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-            if (((Get-Date) - $t3).TotalSeconds -gt 50) { break }
-            Say "살펴보는 중이에요 (3/5)`nAppData(Roaming): $($d.Name)"
-            $r = Scan-Size $d.FullName 3
-            Add-Row 'check' $d.FullName $r.Size 'Roaming 프로그램 데이터. 어떤 프로그램 건지 확인 후 판단' $info $r.Trunc
+        $dirs = @(Get-ChildItem $env:APPDATA -Directory -Force | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+        $ws = @($dirs | ForEach-Object { New-W $_.FullName -maxSec 4 })
+        Run-Walkers $ws '(3/5)' 'AppData(Roaming)를 둘러보고 있어요'
+        for ($i = 0; $i -lt $dirs.Count; $i++) {
+            Add-Row 'check' $dirs[$i].FullName $ws[$i].Total 'Roaming 프로그램 데이터. 어떤 프로그램 건지 확인 후 판단' $info $ws[$i].Truncated
         }
 
-        Say "살펴보는 중이에요 (4/5)`n프로젝트 폴더를 확인하고 있어요"
-        $projPaths = @()
+        # (4/5) 프로젝트 폴더 (바탕화면/문서의 하위 폴더 중 300MB 이상)
+        $dirs = @()
         foreach ($root in 'Desktop', 'Documents') {
-            foreach ($d in Get-ChildItem (Join-Path $UserHome $root) -Directory -Force) {
-                if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-                Say "살펴보는 중이에요 (4/5)`n$root`: $($d.Name)"
-                $r = Scan-Size $d.FullName 12
-                if ($r.Size -ge 300MB) {
-                    $projPaths += $d.FullName
-                    Add-Row 'move' $d.FullName $r.Size "대용량 폴더. ${DL}로 이동 후 원래 위치에 정션 생성 (경로 유지)" @{ Type = 'movefolder'; Path = $d.FullName } $r.Trunc
-                }
+            $dirs += @(Get-ChildItem (Join-Path $UserHome $root) -Directory -Force | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+        }
+        $ws = @($dirs | ForEach-Object { New-W $_.FullName -maxSec 15 })
+        Run-Walkers $ws '(4/5)' '프로젝트 폴더를 확인하고 있어요'
+        $projPaths = @()
+        for ($i = 0; $i -lt $dirs.Count; $i++) {
+            if ($ws[$i].Total -ge 300MB) {
+                $projPaths += $dirs[$i].FullName
+                Add-Row 'move' $dirs[$i].FullName $ws[$i].Total "대용량 폴더. ${DL}로 이동 후 원래 위치에 정션 생성 (경로 유지)" @{ Type = 'movefolder'; Path = $dirs[$i].FullName } $ws[$i].Truncated
             }
         }
 
-        Say "살펴보는 중이에요 (5/5)`n큰 파일을 찾고 있어요"
+        # (5/5) 큰 파일 / 오래된 설치 파일 / node_modules (한꺼번에 동시에)
         $installerExt = '.exe', '.msi', '.iso', '.zip', '.7z', '.rar'
+        $mediaRoots = 'Desktop', 'Videos', 'Pictures', 'Music', 'Documents', 'Downloads'
+        $wDl = New-W (Join-Path $UserHome 'Downloads') -exts $installerExt -olderDays 30 -maxSec 25
+        $wMedia = @($mediaRoots | ForEach-Object { New-W (Join-Path $UserHome $_) -min ($MinMB * 1MB) -exclude $projPaths -maxSec 35 })
+        $wNm = @('Desktop', 'Documents' | ForEach-Object { New-W (Join-Path $UserHome $_) -findDir 'node_modules' -maxDepth 4 -maxSec 25 })
+        Run-Walkers (@($wDl) + $wMedia + $wNm) '(5/5)' '큰 파일을 찾고 있어요'
+
         $instSet = New-Object 'System.Collections.Generic.HashSet[string]'
-        $dlw = New-Walk (Join-Path $UserHome 'Downloads') -exts $installerExt -olderDays 30 -maxSec 25
-        foreach ($p in $dlw.ExtPaths) { [void]$instSet.Add($p) }
-        if ($dlw.ExtPaths.Count -gt 0) {
-            $isum = 0; foreach ($z in $dlw.ExtSizes) { $isum += $z }
-            Add-Row 'move' "다운로드의 오래된 설치·압축 파일 ($($dlw.ExtPaths.Count)개)" $isum "30일 경과 exe/msi/iso/zip. 삭제 없이 ${DL}로 이동" @{ Type = 'movefiles'; Files = @($dlw.ExtPaths) }
+        foreach ($p in $wDl.ExtPaths) { [void]$instSet.Add($p) }
+        if ($wDl.ExtPaths.Count -gt 0) {
+            $isum = 0; foreach ($z in $wDl.ExtSizes) { $isum += $z }
+            Add-Row 'move' "다운로드의 오래된 설치·압축 파일 ($($wDl.ExtPaths.Count)개)" $isum "30일 경과 exe/msi/iso/zip. 삭제 없이 ${DL}로 이동" @{ Type = 'movefiles'; Files = @($wDl.ExtPaths) } $wDl.Truncated
         }
-        foreach ($m in 'Desktop', 'Videos', 'Pictures', 'Music', 'Documents', 'Downloads') {
-            $p = Join-Path $UserHome $m
-            Say "살펴보는 중이에요 (5/5)`n큰 파일: $m"
-            $w = New-Walk $p -min ($MinMB * 1MB) -exclude $projPaths -maxSec 35
+        for ($j = 0; $j -lt $mediaRoots.Count; $j++) {
+            $m = $mediaRoots[$j]; $w = $wMedia[$j]; $p = Join-Path $UserHome $m
             $files = @(); $sizes = @()
             for ($i = 0; $i -lt $w.BigPaths.Count; $i++) {
                 if ($m -eq 'Downloads' -and $instSet.Contains($w.BigPaths[$i])) { continue }
@@ -1151,13 +1192,15 @@ function Start-Analyze {
                 Add-Row 'move' "$p ($($files.Count)개 파일)" $sum "${MinMB}MB 이상 대용량 파일. 예: $top" @{ Type = 'movefiles'; Files = $files } $w.Truncated
             }
         }
-        foreach ($root in 'Desktop', 'Documents') {
-            Say "살펴보는 중이에요 (5/5)`nnode_modules: $root"
-            $w = New-Walk (Join-Path $UserHome $root) -findDir 'node_modules' -maxDepth 4 -maxSec 25
-            if ($w.FoundDirs.Count -gt 0) {
-                $nsum = 0; foreach ($n in $w.FoundDirs) { $nsum += (Scan-Size $n 4).Size }
-                Add-Row 'del' "$root 의 node_modules ($($w.FoundDirs.Count)개)" $nsum 'npm install로 재생성 가능. 미사용 프로젝트만 선택' @{ Type = 'nodemodules'; Paths = @($w.FoundDirs) }
-            }
+        # node_modules 크기도 동시에 재요
+        $nmRoots = 'Desktop', 'Documents'
+        for ($j = 0; $j -lt $nmRoots.Count; $j++) {
+            $found = @($wNm[$j].FoundDirs)
+            if ($found.Count -eq 0) { continue }
+            $wn = @($found | ForEach-Object { New-W $_ -maxSec 4 })
+            Run-Walkers $wn '(5/5)' 'node_modules 크기를 재고 있어요'
+            $nsum = 0; foreach ($x in $wn) { $nsum += $x.Total }
+            Add-Row 'del' "$($nmRoots[$j]) 의 node_modules ($($found.Count)개)" $nsum 'npm install로 재생성 가능. 미사용 프로젝트만 선택' @{ Type = 'nodemodules'; Paths = $found }
         }
         Fill-List
         Set-Phase 'ready'; Update-Sum
@@ -1168,6 +1211,7 @@ function Start-Analyze {
 }
 
 # ---------- 청소 ----------
+function Ask($msg) { [Windows.Forms.MessageBox]::Show($form, $msg, '미미치 청소 도우미', 'YesNo', 'Question') }
 function Start-Clean {
     $checked = @($lv.CheckedItems)
     if ($checked.Count -eq 0) { Say '선택한 항목이 없어요'; return }
@@ -1176,28 +1220,33 @@ function Start-Clean {
     $hasFolder = @($checked | Where-Object { $_.Tag.Act.Type -eq 'movefolder' }).Count -gt 0
     $msg = "삭제 ${nDel}건, 이동 ${nMove}건을 진행할까요?`n`n옮기는 파일은 $Dest 에 보관되고, 지우지 않아요."
     if ($hasFolder) { $msg += "`n폴더를 옮기려면 그 폴더를 쓰는 프로그램(VS Code, 터미널 등)을 먼저 닫아 주세요." }
-    if ([Windows.Forms.MessageBox]::Show($form, $msg, '미미치 청소 도우미', 'YesNo', 'Question') -ne 'Yes') { return }
+    if ($DryRun) { $msg += "`n`n[미리보기 모드] 실제로는 아무것도 지우거나 옮기지 않아요." }
+    if ((Ask $msg) -ne 'Yes') { return }
     $script:prog = 0; Set-Phase 'cleaning'
     $before = (Get-PSDrive $SL).Free; $done = 0; $fails = @()
     try {
         foreach ($it in $checked) {
             $a = $it.Tag.Act
             Say ("열심히 정리하는 중이에요`n{0}" -f $it.Text)
-            switch ($a.Type) {
-                'cache' { [void](Clear-Dir $a.Path $a.Days); Write-Log 'delete-cache' $a.Path '' $it.Tag.Size }
-                'recycle' { Clear-RecycleBin -Force -Confirm:$false; Write-Log 'empty-recyclebin' '' '' $it.Tag.Size }
-                'nodemodules' { foreach ($p in $a.Paths) { Remove-Tree $p; Pump }; Write-Log 'delete-node_modules' ($a.Paths -join ';') '' $it.Tag.Size }
-                'movefiles' {
-                    if ((Free-Of $Dest) -lt ($it.Tag.Size * 1.02 + 100MB)) { $fails += "$($it.Text): 대상 드라이브 공간 부족 (건너뜀)" }
-                    else { foreach ($f in $a.Files) { if (-not (Move-OneFile $f)) { $fails += "${f}: 이동 실패" }; Pump } }
+            if ($DryRun) { Write-Log 'dry-run' $it.Text '' $it.Tag.Size; Start-Sleep -Milliseconds 250 }
+            else {
+                switch ($a.Type) {
+                    'cache' { [void](Clear-Dir $a.Path $a.Days); Write-Log 'delete-cache' $a.Path '' $it.Tag.Size }
+                    'recycle' { Clear-RecycleBin -Force -Confirm:$false; Write-Log 'empty-recyclebin' '' '' $it.Tag.Size }
+                    'nodemodules' { foreach ($p in $a.Paths) { Remove-Tree $p; Pump }; Write-Log 'delete-node_modules' ($a.Paths -join ';') '' $it.Tag.Size }
+                    'movefiles' {
+                        if ((Free-Of $Dest) -lt ($it.Tag.Size * 1.02 + 100MB)) { $fails += "$($it.Text): 대상 드라이브 공간 부족 (건너뜀)" }
+                        else { foreach ($f in $a.Files) { if (-not (Move-OneFile $f)) { $fails += "${f}: 이동 실패" }; Pump } }
+                    }
+                    'movefolder' { $r = Move-FolderWithJunction $a.Path; if ($r) { $fails += "$($it.Text): $r" } }
                 }
-                'movefolder' { $r = Move-FolderWithJunction $a.Path; if ($r) { $fails += "$($it.Text): $r" } }
             }
             $done++; $script:prog = $done / $checked.Count; Inv $rFoot; Pump
         }
         Refresh-Free
         $gain = (Get-PSDrive $SL).Free - $before
         $txt = "정리가 끝났어요!`n$SL 드라이브 여유 공간이 {0} GB 늘었어요`n옮긴 파일은 $Dest 에 있고, 기록은 log.csv에 남겼어요" -f (GB $gain)
+        if ($DryRun) { $txt = "미리보기가 끝났어요`n실제로는 아무것도 바꾸지 않았어요`n어떤 항목이었는지는 log.csv에 남겼어요" }
         if ($fails.Count -gt 0) { $txt += "`n건너뛰었거나 실패한 항목 $($fails.Count)건: $($fails[0])" }
         $lv.Items.Clear(); $script:sayText = $txt; Set-Phase 'done'
     } catch {
@@ -1248,6 +1297,22 @@ function Run-SelfTest {
     T "결과 단계에서는 '청소 시작' 버튼이 반응함 (hover '$($script:hover)')" ($script:hover -eq 'cl')
     foreach ($ph in 'analyzing', 'cleaning', 'done', 'before') { Set-Phase $ph; Pump-Ms 150 }
     T "모든 단계로 바꿔 그려도 그리기 오류 없음" (-not $script:lastPaintError)
+    # 청소 흐름: 미리보기에서는 파일이 그대로, 실제 모드에서는 7일 지난 파일만 삭제 (내 임시 폴더 안의 파일만 사용)
+    $script:LogFile = $null
+    $td = Join-Path $env:TEMP ('mimichi-selftest-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    [void][IO.Directory]::CreateDirectory($td)
+    $tOld = Join-Path $td 'old.tmp'; $tNew = Join-Path $td 'new.tmp'
+    [IO.File]::WriteAllBytes($tOld, (New-Object byte[] 2048)); [IO.File]::SetLastWriteTime($tOld, (Get-Date).AddDays(-10))
+    [IO.File]::WriteAllBytes($tNew, (New-Object byte[] 2048))
+    $script:rows = @(); Add-Row 'del' $td 100MB '자체 점검용 임시 폴더' @{ Type = 'cache'; Path = $td; Days = 7 }
+    function Ask($m) { 'Yes' }
+    Fill-List; Set-Phase 'ready'; $script:DryRun = $true; Start-Clean
+    T "미리보기 모드: 아무 파일도 지우지 않음" ([IO.File]::Exists($tOld) -and [IO.File]::Exists($tNew))
+    Fill-List; Set-Phase 'ready'; $script:DryRun = $false; Start-Clean
+    T "실제 모드: 7일 지난 파일만 삭제, 새 파일은 유지" (-not [IO.File]::Exists($tOld) -and [IO.File]::Exists($tNew))
+    T "정리가 끝나면 '정리 완료' 단계" ($script:phase -eq 'done')
+    try { [IO.Directory]::Delete($td, $true) } catch { }
+    Set-Phase 'before'
     $bmp = New-Object Drawing.Bitmap $form.Width, $form.Height
     $form.DrawToBitmap($bmp, (New-Object Drawing.Rectangle(0, 0, $form.Width, $form.Height))); $bmp.Dispose()
     T "그리기 오류 없음 ($($script:lastPaintError))" (-not $script:lastPaintError)
@@ -1299,7 +1364,7 @@ if ($Snapshot) {
     }
     $script:filling = $true
     $demo = @(
-        @('del', $env:TEMP, 3.2GB, '사용자 임시 파일 (2일 경과분)', @{ Type = 'cache' }),
+        @('del', $env:TEMP, 3.2GB, '사용자 임시 파일 (7일 경과분)', @{ Type = 'cache' }),
         @('del', "$env:LOCALAPPDATA\npm-cache", 1.8GB, 'npm 캐시 (재다운로드)', @{ Type = 'cache' }),
         @('del', "$UserHome\Desktop 의 node_modules (4개)", 1.1GB, 'npm install로 재생성 가능. 미사용 프로젝트만 선택', @{ Type = 'nodemodules' }),
         @('move', "$UserHome\Videos (8개 파일)", 14.5GB, "${MinMB}MB 이상 대용량 파일. 예: record.mp4, trip.mov", @{ Type = 'movefiles' }),
