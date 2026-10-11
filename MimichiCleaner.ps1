@@ -1,16 +1,16 @@
 ﻿<#
   미미치 청소 도우미 (Mimichi Cleaner)
   픽셀 캐릭터가 도와주는 Windows 디스크 정리 도구.
-  - 시스템 드라이브(보통 C)에서 지워도 되는 것 / 다른 드라이브로 옮기면 좋은 것을 찾아서 보여주고,
-    사용자가 체크한 것만 정리합니다. 파일은 지우지 않고 옮기는 것이 기본이에요.
-  - 윈도우에 기본으로 들어있는 PowerShell 5.1만 있으면 돼요. 설치할 것이 없어요.
+  - 시스템 드라이브(보통 C)에서 삭제 가능 항목과 이동 권장 항목을 분류하여 표시하고,
+    사용자가 선택한 항목만 처리합니다. 파일은 삭제 대신 이동하는 것을 기본으로 합니다.
+  - Windows 기본 PowerShell 5.1만 필요하며 별도 설치가 없습니다.
 
   실행 옵션:
-    -Dest <폴더>   파일을 옮겨 둘 폴더 (기본: 시스템 드라이브가 아닌 드라이브 중 여유 공간이 가장 큰 곳의 '정리대기')
-    -MinMB <숫자>  이 크기(MB) 이상인 파일을 "큰 파일"로 봐요 (기본 100)
-    -MakeIcon      아이콘(mimi.ico)만 만들고 끝내요
-    -AutoAnalyze   실행하자마자 분석을 시작해요
-    -SelfTest      마우스/최대화/크기 변경을 흉내 내서 화면 동작을 점검하고 끝내요 (개발용)
+    -Dest <폴더>   이동 대상 폴더 (기본: 시스템 드라이브 외 드라이브 중 여유 공간이 가장 큰 드라이브의 '정리대기')
+    -MinMB <숫자>  대용량 파일 기준 크기(MB) (기본 100)
+    -MakeIcon      아이콘(mimi.ico)만 생성하고 종료
+    -AutoAnalyze   실행 즉시 분석 시작
+    -SelfTest      마우스·최대화·크기 변경을 시뮬레이션하여 화면 동작 점검 후 종료 (개발용)
 #>
 param(
     [string]$Dest = '',
@@ -26,7 +26,7 @@ param(
 )
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
-# 예상 못 한 오류가 나도 오류 창/붉은 X 대신 조용히 error.log에만 남겨요
+# 예기치 않은 오류는 오류 창 대신 error.log에 기록
 [Windows.Forms.Application]::SetUnhandledExceptionMode([Windows.Forms.UnhandledExceptionMode]::CatchException)
 [Windows.Forms.Application]::add_ThreadException([Threading.ThreadExceptionEventHandler]{
     param($sender, $e)
@@ -46,7 +46,7 @@ public class MimiCanvas : Control {
     public MimiCanvas() {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
     }
-    // 창 가장자리는 부모 창이 받게 해서 크기 조절이 되도록 해요
+    // 창 가장자리 입력은 부모 창이 처리하도록 위임 (크기 조절)
     protected override void WndProc(ref Message m) {
         if (m.Msg == 0x84) {
             Form f = FindForm();
@@ -80,8 +80,8 @@ public class MimiForm : Form {
         base.WndProc(ref m);
     }
 }
-// 폴더 스캐너: 링크(정션/심볼릭)는 따라가지 않고, 시간을 나눠서(Step) 돌려서 화면이 멈추지 않아요.
-// 폴더를 읽을 때 같이 오는 크기/수정일 정보를 그대로 써서(파일마다 다시 조회하지 않아서) 빨라요.
+// 폴더 스캐너: 링크(정션/심볼릭) 미추적, 시간 분할(Step) 실행으로 화면 정지 방지.
+// 폴더 열거 시 함께 반환되는 크기·수정일 정보를 재사용 (파일별 재조회 없음).
 public class Walker {
     Stack<string> dirs = new Stack<string>();
     Stack<int> depths = new Stack<int>();
@@ -193,7 +193,7 @@ $script:frame = 0
 $script:prog = 0.0
 $script:filling = $false
 
-# 옮길 드라이브: 지정하지 않으면 "시스템 드라이브가 아닌 고정 드라이브 중 여유 공간이 가장 큰 곳"을 써요
+# 이동 대상: 미지정 시 시스템 드라이브 외 고정 드라이브 중 여유 공간이 가장 큰 드라이브
 if (-not $Dest) {
     $disk = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Where-Object { $_.DeviceID.TrimEnd(':') -ne $SL } |
         Sort-Object FreeSpace -Descending | Select-Object -First 1
@@ -203,7 +203,7 @@ $script:DestOK = [bool]$Dest
 $DL = '?'; if ($Dest) { $DL = $Dest.Substring(0, 1).ToUpper() }
 $LogFile = $null; if ($Dest) { $LogFile = Join-Path $Dest 'log.csv' }
 
-# ---------- 폰트 (fonts 폴더의 LINE Seed Sans KR을 이 프로그램 안에서만 써요. 없으면 맑은 고딕) ----------
+# ---------- 폰트 (fonts 폴더의 LINE Seed Sans KR을 프로세스 내에서만 사용, 없으면 맑은 고딕) ----------
 $script:pfc = New-Object Drawing.Text.PrivateFontCollection
 foreach ($ff in 'LINESeedKR-Rg.ttf', 'LINESeedKR-Bd.ttf') {
     $fp = Join-Path $PSScriptRoot "fonts\$ff"
@@ -225,7 +225,7 @@ function HexC($h) { [Drawing.ColorTranslator]::FromHtml($h) }
 function GB($b) { [math]::Round($b / 1GB, 2) }
 function Pump { [Windows.Forms.Application]::DoEvents(); if ($script:closing) { throw 'closing' } }
 
-# ---------- 픽셀 미미 ----------
+# ---------- 픽셀 캐릭터 (미미치) ----------
 
 $Grid = @(
     '..........oooo................oooo..........',
@@ -382,7 +382,7 @@ function Draw-Grid($g, $rows, $unit, $ox, $oy) {
     }
     $g.SmoothingMode = $prev
 }
-# 도트 그림은 한 번만 비트맵으로 만들어 두고 매 프레임 복사해서 그려요 (빨라요)
+# 도트 그림은 비트맵으로 1회 생성 후 프레임마다 복사 (성능)
 function New-Sprite($rows, $unit) {
     $bmp = New-Object Drawing.Bitmap ($rows[0].Length * $unit), ($rows.Count * $unit)
     $g = [Drawing.Graphics]::FromImage($bmp); Draw-Grid $g $rows $unit 0 0; $g.Dispose()
@@ -429,7 +429,7 @@ function Draw-Star($g, $cx, $cy, $r, $fillHex, $lineHex) {
     $g.SmoothingMode = $prev
 }
 
-# 빗자루: 미미와 같은 3px 도트로 그려요. 막대는 외곽선이 있는 도트 계단, 솔은 줄무늬 도트 스프라이트
+# 빗자루: 캐릭터와 동일한 3px 도트. 막대는 외곽선 있는 도트 계단, 솔은 줄무늬 스프라이트
 $GridBroomHead = @(
     '...kkkkkkk...',
     '..kbbbbbbbk..',
@@ -462,8 +462,8 @@ function Draw-Broom($g, $bx, $by, $tx, $ty) {
     $g.SmoothingMode = $prev
 }
 
-# ---------- 미미가 청소하는 애니메이션 ----------
-# 쓸기 한 번 = 14프레임. 미미는 쓸 때마다 살짝 뛰면서 몸을 기울이고, 빗자루 끝에서 먼지가 밀려 나가요.
+# ---------- 청소 애니메이션 ----------
+# 쓸기 1회 = 14프레임. 쓸 때마다 캐릭터가 뛰며 기울고, 솔 끝에서 먼지가 밀려남.
 function Draw-Illus($g, $ox, $oy) {
     $f = $script:frame; $ph = $script:phase
     $work = ($ph -in 'analyzing', 'cleaning'); $done = ($ph -eq 'done')
@@ -486,7 +486,7 @@ function Draw-Illus($g, $ox, $oy) {
     Draw-Sprite $g $SprFolder ($ox + 20) ($oy + 142)
     Draw-Sprite $g $SprCloud ($ox + 214) ($oy + 160)
 
-    # 빗자루: 미미 뒤에서 손(왼팔)이 잡고 있고, 솔이 바닥을 쓸어요
+    # 빗자루: 캐릭터 뒤에서 왼팔이 잡고, 솔이 바닥을 쓺
     $hx = $mx + 8; $hy = $my + 90
     if ($work) { $swing = 24 } elseif ($done) { $swing = 2 } else { $swing = 4 }
     $bx = $ox + 80 + $s * $swing + $dx * 0.6
@@ -495,7 +495,7 @@ function Draw-Illus($g, $ox, $oy) {
     $tx = $hx + ($hx - $bx) * 0.8; $ty = $hy + ($hy - $by) * 0.8
     Draw-Broom $g $bx $by $tx $ty
 
-    # 먼지: 솔이 가는 방향으로 밀려 나가요 (솔보다 앞에서 튀어 올라요)
+    # 먼지: 솔 이동 방향으로 밀려남 (솔보다 앞에서 튀어 오름)
     if ($work) {
         $prevSm = $g.SmoothingMode; $g.SmoothingMode = 'None'
         $sg = 1; if ($cosv -lt 0) { $sg = -1 }
@@ -521,7 +521,7 @@ function Draw-Illus($g, $ox, $oy) {
         }
     }
 
-    # 미미 (눈: 일할 땐 웃는 눈, 가끔 깜빡)
+    # 캐릭터 (작업 중 웃는 눈, 간헐적 깜빡임)
     $spr = $SprMimi
     if ($work) { $spr = $SprHappy; if (($f % 22) -eq 0) { $spr = $SprMimi } }
     elseif ($done) { $spr = $SprHappy }
@@ -546,7 +546,7 @@ function Draw-Illus($g, $ox, $oy) {
 }
 
 # ---------- 청소 엔진 ----------
-# 폴더를 훑는 일은 전부 Walker(C#)가 해요. 링크(정션)는 따라가지 않아서 "이미 옮겨 둔 폴더"를 다시 세거나 지우지 않아요.
+# 폴더 순회는 Walker(C#)가 전담. 링크(정션)를 따라가지 않으므로 이미 이동한 폴더를 재집계·삭제하지 않음.
 function New-Walk($path, $min = 0, $olderDays = 0, $exts = $null, $findDir = $null, $maxDepth = 99, $exclude = @(), [switch]$Delete, $maxSec = 0) {
     $w = New-Object Walker $path
     $w.MaxMs = [int]($maxSec * 1000)
@@ -586,17 +586,17 @@ function Move-OneFile($file) {
         $true
     } catch { $false }
 }
-# 폴더를 D로 옮기고 원래 자리에 연결(정션)을 남겨요.
-# 순서: 복사 → 개수/용량 확인 → 원본 이름 바꾸기 → 연결 만들기 → 원본 삭제. 어느 단계에서 실패해도 원본은 안전해요.
+# 폴더 이동 후 원래 위치에 정션 생성.
+# 순서: 복사 → 개수·용량 검증 → 원본 이름 변경 → 정션 생성 → 원본 삭제. 단계별 실패 시 원본 보존.
 function Move-FolderWithJunction($src) {
     $src = (Resolve-Path -LiteralPath $src).Path.TrimEnd('\')
-    if (-not $src.StartsWith($UserHome + '\')) { return '사용자 폴더 밖이라 건너뜀' }
-    if ((Get-Item -LiteralPath $src -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { return '이미 연결된 폴더라 건너뜀' }
+    if (-not $src.StartsWith($UserHome + '\')) { return '사용자 폴더 외부 (건너뜀)' }
+    if ((Get-Item -LiteralPath $src -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { return '이미 정션 폴더 (건너뜀)' }
     $dst = Join-Path $Dest ($src.Substring($UserHome.Length).TrimStart('\'))
-    if ([IO.Directory]::Exists($dst)) { return "이미 $dst 가 있어서 건너뜀 (직접 확인해 주세요)" }
+    if ([IO.Directory]::Exists($dst)) { return "대상 폴더가 이미 존재: $dst (건너뜀)" }
     $w1 = New-Walk $src
-    if ($w1.Links -gt 0) { return '폴더 안에 연결(링크)이 있어서 건너뜀' }
-    if ((Free-Of $Dest) -lt ($w1.Total * 1.02 + 200MB)) { return '옮길 드라이브의 공간이 부족해서 건너뜀' }
+    if ($w1.Links -gt 0) { return '폴더 내 링크 존재 (건너뜀)' }
+    if ((Free-Of $Dest) -lt ($w1.Total * 1.02 + 200MB)) { return '대상 드라이브 공간 부족 (건너뜀)' }
     [void][IO.Directory]::CreateDirectory($dst)
     $p = Start-Process robocopy -ArgumentList "`"$src`" `"$dst`" /E /COPY:DAT /DCOPY:DAT /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP" -WindowStyle Hidden -PassThru
     $null = $p.Handle
@@ -604,29 +604,29 @@ function Move-FolderWithJunction($src) {
     $w2 = New-Walk $dst
     if ($p.ExitCode -ge 8 -or $w2.Count -ne $w1.Count -or $w2.Total -ne $w1.Total) {
         Remove-Tree $dst
-        return '복사 확인에 실패해서 원본은 그대로 두었어요'
+        return '복사 검증 실패 (원본 보존)'
     }
     $old = "$src.mimichi-old"
     try { [IO.Directory]::Move($src, $old) } catch {
         Remove-Tree $dst
-        return '폴더를 쓰는 프로그램이 있어서 옮기지 못했어요 (원본은 그대로). 프로그램을 닫고 다시 해보세요'
+        return '폴더 사용 중 (원본 보존). 해당 프로그램 종료 후 재시도'
     }
     try { New-Item -ItemType Junction -Path $src -Target $dst -ErrorAction Stop | Out-Null } catch {
         [IO.Directory]::Move($old, $src); Remove-Tree $dst
-        return '연결을 만들지 못해서 원래대로 되돌렸어요'
+        return '정션 생성 실패 (원복 완료)'
     }
     Write-Log 'move+junction' $src $dst $w1.Total
     Remove-Tree $old
-    if ([IO.Directory]::Exists($old)) { return "옮기기는 끝났지만 옛 폴더($old)를 다 지우지 못했어요. 나중에 직접 지워 주세요" }
+    if ([IO.Directory]::Exists($old)) { return "이동 완료. 이전 폴더 일부 삭제 실패: $old" }
     ''
 }
-# 폴더 통째로 지우기 (깊은 경로도 되도록 cmd를 써요. 링크는 따라가지 않고 링크만 지워요)
+# 폴더 일괄 삭제 (깊은 경로를 위해 cmd 사용, 링크는 링크만 제거)
 function Remove-Tree($path) {
     if ([IO.Directory]::Exists($path)) { cmd.exe /c "rmdir /s /q `"$path`"" | Out-Null }
 }
 
 # ---------- 화면 (목업에서 뽑은 색 그대로) ----------
-# 모든 좌표는 "논리 좌표(96dpi 기준)"예요. 화면 배율($Sc)과 창 크기에 맞춰 그릴 때 곱해줘요.
+# 모든 좌표는 논리 좌표(96dpi 기준). 그릴 때 화면 배율($Sc) 적용.
 $script:W = 900; $script:H = 756
 $script:phase = 'before'; $script:hover = ''; $script:tip = 0
 $script:footerText = ''; $script:sayText = ''
@@ -646,12 +646,12 @@ $fGreet = Mk-Font 11; $fHead = Mk-Font 18.5 'Bold'; $fSub = Mk-Font 10; $fBtn = 
 $fCardT = Mk-Font 12 'Bold'; $fBig = Mk-Font 23 'Bold'; $fSmall = Mk-Font 9.5; $fResT = Mk-Font 12.5 'Bold'
 $fBadge = Mk-Font 10 'Bold'; $fEmpty = Mk-Font 12; $fHint = Mk-Font 10; $fTip = Mk-Font 10; $fFoot = Mk-Font 10 'Bold'
 $fTitle = Mk-Font 11; $fRow = Mk-Font 10
-$fList = Mk-Font 9.5 'Regular' $Sc      # 목록은 변환 없이 그려서 배율을 직접 곱해요
+$fList = Mk-Font 9.5 'Regular' $Sc      # 목록은 변환 없이 그리므로 배율 직접 적용
 $sfT = [Drawing.StringFormat]::GenericTypographic.Clone(); $sfT.FormatFlags = 'NoWrap, MeasureTrailingSpaces'
 $sfE = New-Object Drawing.StringFormat; $sfE.Trimming = 'EllipsisCharacter'; $sfE.FormatFlags = 'NoWrap'; $sfE.LineAlignment = 'Center'
 function RC($x, $y, $w, $h) { New-Object Drawing.Rectangle ([int]$x), ([int]$y), ([int]$w), ([int]$h) }
 
-# 창 크기에 맞춰 자리를 다시 잡아요 (왼쪽 글/버튼은 고정, 카드와 목록은 늘어나요)
+# 창 크기에 맞춰 레이아웃 재계산 (좌측 텍스트·버튼 고정, 카드·목록 확장)
 function Apply-Layout($w, $h) {
     $script:W = $w; $script:H = $h
     $script:rMin = RC ($w - 146) 8 32 28; $script:rMax = RC ($w - 96) 8 32 28; $script:rClose = RC ($w - 44) 8 32 28
@@ -707,7 +707,7 @@ function Draw-Leaf($g, $cx, $cy) {
     $g.DrawLine((Pn $C.leaf 1.8), [single]($cx - 7), [single]($cy + 9), [single]($cx - 1), [single]($cy + 2))
 }
 
-# ---------- 고정 그림 (상태나 창 크기가 바뀔 때만 다시 그려요) ----------
+# ---------- 정적 레이어 (상태·창 크기 변경 시에만 재생성) ----------
 function Render-Static {
     $W = $script:W; $H = $script:H
     $bmp = New-Object Drawing.Bitmap ([int]($W * $Sc)), ([int]($H * $Sc))
@@ -723,13 +723,13 @@ function Render-Static {
     $g.DrawPath((Pn $C.winBorder 1.6), $win)
     # 제목줄
     $g.InterpolationMode = 'NearestNeighbor'; $g.PixelOffsetMode = 'Half'; $g.DrawImage($mimiBmp, 20, 9, 22, 24); $g.PixelOffsetMode = 'HighQuality'; $g.InterpolationMode = 'HighQualityBicubic'
-    TxtL $g '미미 청소 도우미' $fTitle $C.titleTxt 52 22
+    TxtL $g '미미치 청소 도우미' $fTitle $C.titleTxt 52 22
     # 인사말 / 제목
-    TxtL $g '안녕하세요!' $fGreet $C.greet 43 82
-    TxtL $g '미미가 느려진 PC를' $fHead $C.head 42 111
-    TxtL $g '깨끗하게 정리해줄게요!' $fHead $C.head 42 146
+    TxtL $g '안녕하세요, 미미치예요!' $fGreet $C.greet 43 82
+    TxtL $g '느려진 PC를' $fHead $C.head 42 111
+    TxtL $g '깨끗하게 정리해 드릴게요' $fHead $C.head 42 146
     TxtL $g '지금 바로 드라이브를 분석해서' $fSub $C.sub 43 181
-    TxtL $g '불필요한 파일을 찾아볼까요?' $fSub $C.sub 43 203
+    TxtL $g '정리할 파일을 찾아볼까요?' $fSub $C.sub 43 203
     # C 드라이브 카드
     $cx = $rCardC.X; $cy = $rCardC.Y
     [Gfx]::Card($g, $cx, $cy, $rCardC.Width, $rCardC.Height, 20, (HexC $C.card), (HexC $C.edgeC), 8)
@@ -751,7 +751,7 @@ function Render-Static {
     }
     $g.DrawLine((Pn $C.divider 1.4), ($cx + 20), ($cy + 120), ($cx + 280), ($cy + 120))
     Draw-Drive $g ($cx + 22) ($cy + 137)
-    $dText = '옮길 다른 드라이브가 없어요'; if ($script:DestOK) { $dText = ('{0} 드라이브   여유 {1} GB' -f $DL, (GB $script:freeD)) }
+    $dText = '이동할 드라이브 없음'; if ($script:DestOK) { $dText = ('{0} 드라이브   여유 {1} GB' -f $DL, (GB $script:freeD)) }
     TxtL $g $dText $fRow $C.dTxt ($cx + 56) ($cy + 144)
     $cp = Pn $C.chevron 1.8; $chx = $rCardC.Right - 26
     $g.DrawLine($cp, $chx, ($cy + 138), ($chx + 6), ($cy + 144)); $g.DrawLine($cp, ($chx + 6), ($cy + 144), $chx, ($cy + 150))
@@ -760,8 +760,8 @@ function Render-Static {
     [Gfx]::Card($g, $rx, $ry, $rRes.Width, $rRes.Height, 22, (HexC $C.card), (HexC $C.edgeR), 7)
     Draw-DocIcon $g ($rx + 22) ($ry + 12) 23 28 $C.resIcon '#F4FBF6'
     TxtL $g '분석 결과' $fResT $C.resTitle ($rx + 63) ($ry + 26)
-    $badge = @{ 'before' = @('분석 전', $C.badgeBg, $C.badgeTxt); 'analyzing' = @('분석 중...', '#F6E7B8', '#6B5300')
-                'ready' = @('분석 완료', '#C4E0BE', '#1F4D2E'); 'cleaning' = @('청소 중...', '#F6E7B8', '#6B5300'); 'done' = @('청소 완료', '#CFE3F7', '#1F4F7A') }[$script:phase]
+    $badge = @{ 'before' = @('분석 전', $C.badgeBg, $C.badgeTxt); 'analyzing' = @('분석 중', '#F6E7B8', '#6B5300')
+                'ready' = @('분석 완료', '#C4E0BE', '#1F4D2E'); 'cleaning' = @('정리 중', '#F6E7B8', '#6B5300'); 'done' = @('정리 완료', '#CFE3F7', '#1F4F7A') }[$script:phase]
     $bw = (TxtW $g $badge[0] $fBadge) + 30
     $bp = [Gfx]::Round(($rRes.Right - 16 - $bw), ($ry + 12), $bw, 28, 14)
     $g.FillPath((Br $badge[1]), $bp); $bp.Dispose()
@@ -774,7 +774,7 @@ function Render-Static {
         Draw-Star $g ($ec + 40) ($cy0 - 90) 9 $null $C.emptyIcon
         Draw-Star $g ($ec + 54) ($cy0 - 72) 5 $null $C.emptyIcon
         Draw-Star $g ($ec - 42) ($cy0 - 44) 6 $null $C.emptyIcon
-        $lines = @('드라이브를 분석하면', '정리할 수 있는 항목을 보여드릴게요.'); $hint = "지금 '드라이브 분석하기'를 눌러주세요!"
+        $lines = @('드라이브를 분석하면', '정리할 수 있는 항목을 알려 드릴게요'); $hint = "'드라이브 분석하기'를 눌러 주세요"
         if ($script:phase -ne 'before' -and $script:sayText) {
             $parts = @($script:sayText -split "`n"); $lines = @($parts[0]); if ($parts.Count -gt 1) { $lines += $parts[1] }; $hint = ''
             if ($parts.Count -gt 2) { $hint = ($parts[2..($parts.Count - 1)] -join '  ') }
@@ -802,7 +802,7 @@ $mimiBmp = New-Object Drawing.Bitmap 44, 48
 $gm = [Drawing.Graphics]::FromImage($mimiBmp); Draw-Grid $gm $Grid 1 0 0; $gm.Dispose()
 
 $form = New-Object MimiForm
-$form.Text = '미미 청소 도우미'; $form.FormBorderStyle = 'None'; $form.StartPosition = 'CenterScreen'
+$form.Text = '미미치 청소 도우미'; $form.FormBorderStyle = 'None'; $form.StartPosition = 'CenterScreen'
 $form.ClientSize = New-Object Drawing.Size ([int](900 * $Sc)), ([int](756 * $Sc)); $form.BackColor = HexC $C.winBg
 $form.MinimumSize = New-Object Drawing.Size ([int](780 * $Sc)), ([int](640 * $Sc))
 if (Test-Path $IcoPath) { $form.Icon = New-Object Drawing.Icon($IcoPath) }
@@ -814,7 +814,7 @@ $canvas = New-Object MimiCanvas
 $canvas.Dock = 'Fill'; $canvas.BackColor = HexC $C.winBg
 $form.Controls.Add($canvas)
 
-# ---------- 목록 (직접 그려요) ----------
+# ---------- 목록 (오너 드로우) ----------
 $lv = New-Object Windows.Forms.ListView
 $lv.Parent = $canvas
 $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.HideSelection = $false; $lv.ShowGroups = $false
@@ -825,10 +825,10 @@ $rowImg = New-Object Windows.Forms.ImageList; $rowImg.ImageSize = New-Object Dra
 $sfCell = New-Object Drawing.StringFormat; $sfCell.LineAlignment = 'Center'; $sfCell.Trimming = 'EllipsisCharacter'; $sfCell.FormatFlags = 'NoWrap'
 Apply-Layout 900 756
 $groupDef = [ordered]@{
-    'del'   = '삭제해도 돼요 (다시 생기는 것들)'
-    'move'  = "${DL}로 옮기면 좋아요"
-    'check' = '직접 확인이 필요해요'
-    'keep'  = '건드리면 위험해요 (그대로 두세요)'
+    'del'   = '삭제 가능 (재생성되는 항목)'
+    'move'  = "이동 권장 (${DL} 드라이브)"
+    'check' = '확인 필요'
+    'keep'  = '변경 금지'
 }
 $tagColor = @{ 'del' = '#2F8F5B'; 'move' = '#2E6FB0'; 'check' = '#A9780E'; 'keep' = '#C0453D' }
 $brTag = @{}; foreach ($kk in $tagColor.Keys) { $brTag[$kk] = New-Object Drawing.SolidBrush (HexC $tagColor[$kk]) }
@@ -893,7 +893,7 @@ function Update-Sum {
         $t = $it.Tag.Act.Type
         if ($t -in 'cache', 'recycle', 'nodemodules') { $del += $it.Tag.Size } elseif ($t -in 'movefiles', 'movefolder') { $mov += $it.Tag.Size }
     }
-    $script:footerText = "체크한 항목:  삭제 {0} GB  ·  D로 이동 {1} GB" -f (GB $del), (GB $mov)
+    $script:footerText = "선택: 삭제 {0} GB · 이동 {1} GB" -f (GB $del), (GB $mov)
     Inv $rFoot
 }
 
@@ -933,7 +933,7 @@ function Draw-TitleBtns($g) {
         }
     }
 }
-$tips = @('정리하면 더 빠르고 여유로운 PC를 만들 수 있어요!', '캐시와 임시파일은 지워도 다시 생기니까 안심하세요.', "큰 파일은 지우지 않고 $DL 드라이브로 옮겨 둘 수 있어요.")
+$tips = @('캐시와 임시 파일은 지워도 필요하면 자동으로 다시 생겨요', "큰 파일은 지우지 않고 $DL 드라이브로 옮겨 둘 수 있어요", '옮긴 폴더도 원래 경로 그대로 열 수 있어요')
 $canvas.Add_Paint({
   try {
     $g = $_.Graphics; $clip = $_.ClipRectangle
@@ -954,7 +954,7 @@ $canvas.Add_Paint({
             $pw = [int]($bwid * [math]::Max(0.03, $script:prog))
             $bp2 = [Gfx]::Round(50, ($rFoot.Y + 44), $pw, 14, 7); $g.FillPath((Br $C.btn), $bp2); $bp2.Dispose()
         }
-        Draw-Button $g $rCl '청소 시작!' ($script:phase -eq 'ready') ($script:hover -eq 'cl') $false
+        Draw-Button $g $rCl '청소 시작' ($script:phase -eq 'ready') ($script:hover -eq 'cl') $false
     }
     if ($lc.IntersectsWith($rTip)) {
         TxtL $g $tips[$script:tip % 3] $fTip $C.tipTxt ($rTip.X + 56) ($rTip.Y + 24)
@@ -1000,7 +1000,7 @@ $canvas.Add_MouseUp({
     }
 })
 
-# 창 크기가 바뀌면 (멈춘 뒤에) 레이아웃을 다시 잡아요
+# 창 크기 변경 종료 후 레이아웃 재계산
 $resizeTimer = New-Object Windows.Forms.Timer
 $resizeTimer.Interval = 50
 $resizeTimer.Add_Tick({
@@ -1015,8 +1015,8 @@ $form.Add_SizeChanged({ $resizeTimer.Stop(); $resizeTimer.Start() })
 $script:rows = @()
 function Add-Row($tag, $path, $size, $why, $act, $trunc = $false, [switch]$Always) {
     if ($size -lt 50MB -and -not $Always) { return }
-    if ($trunc) { $why += ' (시간이 걸려서 일부만 계산)' }
-    if (-not $script:DestOK -and $act.Type -in 'movefiles', 'movefolder') { $act = @{ Type = 'info' }; $why += ' (옮길 다른 드라이브가 없어요)' }
+    if ($trunc) { $why += ' (일부만 계산)' }
+    if (-not $script:DestOK -and $act.Type -in 'movefiles', 'movefolder') { $act = @{ Type = 'info' }; $why += ' (이동할 드라이브 없음)' }
     $script:rows += [pscustomobject]@{ Tag = $tag; Path = $path; Size = $size; Why = $why; Act = $act }
 }
 function Scan-Size($path, $sec, $days = 0) { $w = New-Walk $path -maxSec $sec -olderDays $days; @{ Size = $w.Total; Trunc = $w.Truncated } }
@@ -1047,92 +1047,92 @@ function Start-Analyze {
     Set-Phase 'analyzing'; $script:rows = @(); $lv.Items.Clear()
     $L = $env:LOCALAPPDATA
     try {
-        Say "살펴보는 중이에요... (1/5)`n임시파일과 캐시를 보고 있어요."
+        Say "살펴보는 중이에요 (1/5)`n임시 파일과 캐시를 확인하고 있어요"
         $cache = @(
-            @($env:TEMP, '사용자 임시 파일 (2일 넘은 것만)', 2), @("$env:SystemRoot\Temp", 'Windows 임시 파일 (2일 넘은 것만, 일부는 관리자 권한 필요)', 2),
-            @("$L\CrashDumps", '프로그램 충돌 기록', 0), @("$L\D3DSCache", '그래픽 셰이더 캐시 (다시 생김)', 0),
-            @("$L\npm-cache", 'npm 다운로드 캐시 (다시 받아짐)', 0), @("$L\pip\Cache", 'pip 다운로드 캐시 (다시 받아짐)', 0),
-            @("$L\Yarn\Cache", 'yarn 다운로드 캐시 (다시 받아짐)', 0),
-            @("$L\Google\Chrome\User Data\Default\Cache", 'Chrome 캐시 (로그인/북마크는 안 지워짐)', 0),
-            @("$L\Microsoft\Edge\User Data\Default\Cache", 'Edge 캐시 (로그인/북마크는 안 지워짐)', 0),
+            @($env:TEMP, '사용자 임시 파일 (2일 경과분)', 2), @("$env:SystemRoot\Temp", 'Windows 임시 파일 (2일 경과분, 일부 관리자 권한 필요)', 2),
+            @("$L\CrashDumps", '프로그램 충돌 기록', 0), @("$L\D3DSCache", '그래픽 셰이더 캐시 (재생성)', 0),
+            @("$L\npm-cache", 'npm 캐시 (재다운로드)', 0), @("$L\pip\Cache", 'pip 캐시 (재다운로드)', 0),
+            @("$L\Yarn\Cache", 'yarn 캐시 (재다운로드)', 0),
+            @("$L\Google\Chrome\User Data\Default\Cache", 'Chrome 캐시 (로그인·북마크 유지)', 0),
+            @("$L\Microsoft\Edge\User Data\Default\Cache", 'Edge 캐시 (로그인·북마크 유지)', 0),
             @("$L\Microsoft\Windows\INetCache", '인터넷 임시 파일', 0), @("$L\Microsoft\Windows\WER", 'Windows 오류 보고서', 0)
         )
         foreach ($ce in $cache) { $r = Scan-Size $ce[0] 8 $ce[2]; Add-Row 'del' $ce[0] $r.Size $ce[1] @{ Type = 'cache'; Path = $ce[0]; Days = $ce[2] } $r.Trunc }
-        Add-Row 'del' '휴지통' (Get-RecycleSize) '휴지통 비우기 (체크는 직접 해주세요)' @{ Type = 'recycle' }
+        Add-Row 'del' '휴지통' (Get-RecycleSize) '휴지통 비우기 (기본 선택 안 됨)' @{ Type = 'recycle' }
 
-        Say "살펴보는 중이에요... (2/5)`n시스템 파일은 구경만 할게요."
+        Say "살펴보는 중이에요 (2/5)`n시스템 파일은 보기만 할게요"
         foreach ($f in 'hiberfil.sys', 'pagefile.sys', 'swapfile.sys') {
             $item = Get-Item -LiteralPath "$SL`:\$f" -Force
             if ($item) {
-                if ($f -eq 'hiberfil.sys') { Add-Row 'check' $item.FullName $item.Length '최대절전용. 안 쓰면 관리자 CMD에서 powercfg -h off' @{ Type = 'info' } }
-                else { Add-Row 'keep' $item.FullName $item.Length 'Windows 가상 메모리. 지우면 안 돼요' @{ Type = 'info' } }
+                if ($f -eq 'hiberfil.sys') { Add-Row 'check' $item.FullName $item.Length '최대 절전 파일. 미사용 시 관리자 권한으로 powercfg -h off 실행' @{ Type = 'info' } }
+                else { Add-Row 'keep' $item.FullName $item.Length 'Windows 가상 메모리. 삭제 금지' @{ Type = 'info' } }
             }
         }
         if (Test-Path "$SL`:\Windows.old") {
             $r = Scan-Size "$SL`:\Windows.old" 20
-            Add-Row 'check' "$SL`:\Windows.old" $r.Size '이전 Windows 백업. "디스크 정리 > 이전 Windows 설치"로 지우세요' @{ Type = 'info' } $r.Trunc
+            Add-Row 'check' "$SL`:\Windows.old" $r.Size '이전 Windows 백업. 디스크 정리 > 이전 Windows 설치에서 삭제' @{ Type = 'info' } $r.Trunc
         }
         $info = @{ Type = 'info' }
-        # 시스템 폴더는 "건드리지 마세요"라고 알려주기만 해요 (파일이 수십만 개라 크기를 재면 오래 걸려서 재지 않아요)
-        foreach ($sys in @(@("$SL`:\Program Files", '설치된 프로그램. 옮기면 실행이 안 돼요'), @("$SL`:\Program Files (x86)", '설치된 프로그램 (32비트)'),
-                           @("$SL`:\ProgramData", '프로그램 공용 데이터'), @($env:SystemRoot, 'Windows 본체'))) {
+        # 시스템 폴더는 안내만 표시 (파일 수가 많아 크기를 측정하지 않음)
+        foreach ($sys in @(@("$SL`:\Program Files", '설치된 프로그램. 이동 시 실행 불가'), @("$SL`:\Program Files (x86)", '설치된 프로그램 (32비트)'),
+                           @("$SL`:\ProgramData", '프로그램 공용 데이터'), @($env:SystemRoot, 'Windows 시스템'))) {
             Add-Row 'keep' $sys[0] 0 $sys[1] $info -Always
         }
 
-        Say "살펴보는 중이에요... (3/5)`nAppData 안을 둘러보고 있어요."
+        Say "살펴보는 중이에요 (3/5)`nAppData를 둘러보는 중이에요"
         $skip = 'Temp', 'CrashDumps', 'D3DSCache', 'npm-cache', 'pip', 'Yarn'
-        $t3 = Get-Date   # AppData는 폴더가 많아서, 전체 시간이 길어지지 않게 100초까지만 훑어요
+        $t3 = Get-Date   # AppData는 폴더 수가 많아 전체 100초까지만 측정
         foreach ($d in Get-ChildItem $L -Directory -Force) {
             if ($skip -contains $d.Name -or ($d.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
             if (((Get-Date) - $t3).TotalSeconds -gt 100) { break }
-            Say "살펴보는 중이에요... (3/5)`nAppData: $($d.Name)"
+            Say "살펴보는 중이에요 (3/5)`nAppData: $($d.Name)"
             $r = Scan-Size $d.FullName 4; $sz = $r.Size; $tr = $r.Trunc
             if ($sz -lt 200MB) { continue }
             switch -Regex ($d.Name) {
                 '^Packages$' { Add-Row 'keep' $d.FullName $sz 'Microsoft Store 앱 데이터' $info $tr }
-                'Docker|wsl' { Add-Row 'keep' $d.FullName $sz 'Docker/WSL 가상 디스크. 직접 옮기면 깨져요' $info $tr }
+                'Docker|wsl' { Add-Row 'keep' $d.FullName $sz 'Docker/WSL 가상 디스크. 직접 이동 시 손상' $info $tr }
                 '^Programs$' { Add-Row 'keep' $d.FullName $sz '사용자 설치 프로그램' $info $tr }
                 '^Microsoft$' { Add-Row 'keep' $d.FullName $sz 'Windows/Office/Edge 데이터' $info $tr }
                 '^(Google|BraveSoftware)$' { Add-Row 'keep' $d.FullName $sz '브라우저 프로필(로그인/북마크)' $info $tr }
-                '^(Steam|Epic)' { Add-Row 'move' $d.FullName $sz "게임 런처. 런처 설정에서 라이브러리를 ${DL}로 바꿔주세요 (자동 이동 불가)" $info $tr }
-                default { Add-Row 'check' $d.FullName $sz '프로그램 데이터. 어떤 프로그램 건지 확인 후 판단' $info $tr }
+                '^(Steam|Epic)' { Add-Row 'move' $d.FullName $sz "게임 런처. 런처 설정에서 라이브러리 위치를 ${DL}로 변경 (자동 이동 불가)" $info $tr }
+                default { Add-Row 'check' $d.FullName $sz '프로그램 데이터. 용도 확인 후 판단' $info $tr }
             }
         }
         $t3 = Get-Date
         foreach ($d in Get-ChildItem $env:APPDATA -Directory -Force) {
             if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
             if (((Get-Date) - $t3).TotalSeconds -gt 50) { break }
-            Say "살펴보는 중이에요... (3/5)`nAppData(Roaming): $($d.Name)"
+            Say "살펴보는 중이에요 (3/5)`nAppData(Roaming): $($d.Name)"
             $r = Scan-Size $d.FullName 3
             Add-Row 'check' $d.FullName $r.Size 'Roaming 프로그램 데이터. 어떤 프로그램 건지 확인 후 판단' $info $r.Trunc
         }
 
-        Say "살펴보는 중이에요... (4/5)`n프로젝트 폴더를 보고 있어요."
+        Say "살펴보는 중이에요 (4/5)`n프로젝트 폴더를 확인하고 있어요"
         $projPaths = @()
         foreach ($root in 'Desktop', 'Documents') {
             foreach ($d in Get-ChildItem (Join-Path $UserHome $root) -Directory -Force) {
                 if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-                Say "살펴보는 중이에요... (4/5)`n$root`: $($d.Name)"
+                Say "살펴보는 중이에요 (4/5)`n$root`: $($d.Name)"
                 $r = Scan-Size $d.FullName 12
                 if ($r.Size -ge 300MB) {
                     $projPaths += $d.FullName
-                    Add-Row 'move' $d.FullName $r.Size "큰 폴더. ${DL}로 옮기고 원래 자리엔 연결을 남겨요 (프로그램 경로 안 깨짐)" @{ Type = 'movefolder'; Path = $d.FullName } $r.Trunc
+                    Add-Row 'move' $d.FullName $r.Size "대용량 폴더. ${DL}로 이동 후 원래 위치에 정션 생성 (경로 유지)" @{ Type = 'movefolder'; Path = $d.FullName } $r.Trunc
                 }
             }
         }
 
-        Say "살펴보는 중이에요... (5/5)`n큰 파일을 찾고 있어요."
+        Say "살펴보는 중이에요 (5/5)`n큰 파일을 찾고 있어요"
         $installerExt = '.exe', '.msi', '.iso', '.zip', '.7z', '.rar'
         $instSet = New-Object 'System.Collections.Generic.HashSet[string]'
         $dlw = New-Walk (Join-Path $UserHome 'Downloads') -exts $installerExt -olderDays 30 -maxSec 25
         foreach ($p in $dlw.ExtPaths) { [void]$instSet.Add($p) }
         if ($dlw.ExtPaths.Count -gt 0) {
             $isum = 0; foreach ($z in $dlw.ExtSizes) { $isum += $z }
-            Add-Row 'move' "다운로드의 오래된 설치/압축 파일 ($($dlw.ExtPaths.Count)개)" $isum "30일 넘은 exe/msi/iso/zip. 지우지 않고 ${DL}로 옮겨요" @{ Type = 'movefiles'; Files = @($dlw.ExtPaths) }
+            Add-Row 'move' "다운로드의 오래된 설치·압축 파일 ($($dlw.ExtPaths.Count)개)" $isum "30일 경과 exe/msi/iso/zip. 삭제 없이 ${DL}로 이동" @{ Type = 'movefiles'; Files = @($dlw.ExtPaths) }
         }
         foreach ($m in 'Desktop', 'Videos', 'Pictures', 'Music', 'Documents', 'Downloads') {
             $p = Join-Path $UserHome $m
-            Say "살펴보는 중이에요... (5/5)`n큰 파일: $m"
+            Say "살펴보는 중이에요 (5/5)`n큰 파일: $m"
             $w = New-Walk $p -min ($MinMB * 1MB) -exclude $projPaths -maxSec 35
             $files = @(); $sizes = @()
             for ($i = 0; $i -lt $w.BigPaths.Count; $i++) {
@@ -1142,15 +1142,15 @@ function Start-Analyze {
             if ($files.Count -gt 0) {
                 $sum = ($sizes | Measure-Object -Sum).Sum
                 $top = (0..($files.Count - 1) | Sort-Object { $sizes[$_] } -Descending | Select-Object -First 3 | ForEach-Object { [IO.Path]::GetFileName($files[$_]) }) -join ', '
-                Add-Row 'move' "$p ($($files.Count)개 파일)" $sum "${MinMB}MB 이상 큰 파일들. 예: $top" @{ Type = 'movefiles'; Files = $files } $w.Truncated
+                Add-Row 'move' "$p ($($files.Count)개 파일)" $sum "${MinMB}MB 이상 대용량 파일. 예: $top" @{ Type = 'movefiles'; Files = $files } $w.Truncated
             }
         }
         foreach ($root in 'Desktop', 'Documents') {
-            Say "살펴보는 중이에요... (5/5)`nnode_modules: $root"
+            Say "살펴보는 중이에요 (5/5)`nnode_modules: $root"
             $w = New-Walk (Join-Path $UserHome $root) -findDir 'node_modules' -maxDepth 4 -maxSec 25
             if ($w.FoundDirs.Count -gt 0) {
                 $nsum = 0; foreach ($n in $w.FoundDirs) { $nsum += (Scan-Size $n 4).Size }
-                Add-Row 'del' "$root 의 node_modules ($($w.FoundDirs.Count)개)" $nsum 'npm install로 다시 만들 수 있어요 (안 쓰는 프로젝트만 체크하세요)' @{ Type = 'nodemodules'; Paths = @($w.FoundDirs) }
+                Add-Row 'del' "$root 의 node_modules ($($w.FoundDirs.Count)개)" $nsum 'npm install로 재생성 가능. 미사용 프로젝트만 선택' @{ Type = 'nodemodules'; Paths = @($w.FoundDirs) }
             }
         }
         Fill-List
@@ -1164,26 +1164,26 @@ function Start-Analyze {
 # ---------- 청소 ----------
 function Start-Clean {
     $checked = @($lv.CheckedItems)
-    if ($checked.Count -eq 0) { Say '체크한 항목이 없어요!'; return }
+    if ($checked.Count -eq 0) { Say '선택한 항목이 없어요'; return }
     $nDel = @($checked | Where-Object { $_.Tag.Act.Type -in 'cache', 'recycle', 'nodemodules' }).Count
     $nMove = $checked.Count - $nDel
     $hasFolder = @($checked | Where-Object { $_.Tag.Act.Type -eq 'movefolder' }).Count -gt 0
-    $msg = "삭제 ${nDel}개, 이동 ${nMove}개를 진행할까요?`n`n※ 이동은 $Dest 로 옮겨요 (지우지 않아요)."
-    if ($hasFolder) { $msg += "`n※ 폴더 이동은 그 폴더를 쓰는 프로그램(VS Code, 터미널 등)을 먼저 닫아주세요." }
-    if ([Windows.Forms.MessageBox]::Show($form, $msg, '미미 청소 도우미', 'YesNo', 'Question') -ne 'Yes') { return }
+    $msg = "삭제 ${nDel}건, 이동 ${nMove}건을 진행할까요?`n`n옮기는 파일은 $Dest 에 보관되고, 지우지 않아요."
+    if ($hasFolder) { $msg += "`n폴더를 옮기려면 그 폴더를 쓰는 프로그램(VS Code, 터미널 등)을 먼저 닫아 주세요." }
+    if ([Windows.Forms.MessageBox]::Show($form, $msg, '미미치 청소 도우미', 'YesNo', 'Question') -ne 'Yes') { return }
     $script:prog = 0; Set-Phase 'cleaning'
     $before = (Get-PSDrive $SL).Free; $done = 0; $fails = @()
     try {
         foreach ($it in $checked) {
             $a = $it.Tag.Act
-            Say ("쓱싹쓱싹 청소 중...`n{0}" -f $it.Text)
+            Say ("열심히 정리하는 중이에요`n{0}" -f $it.Text)
             switch ($a.Type) {
                 'cache' { [void](Clear-Dir $a.Path $a.Days); Write-Log 'delete-cache' $a.Path '' $it.Tag.Size }
                 'recycle' { Clear-RecycleBin -Force -Confirm:$false; Write-Log 'empty-recyclebin' '' '' $it.Tag.Size }
                 'nodemodules' { foreach ($p in $a.Paths) { Remove-Tree $p; Pump }; Write-Log 'delete-node_modules' ($a.Paths -join ';') '' $it.Tag.Size }
                 'movefiles' {
-                    if ((Free-Of $Dest) -lt ($it.Tag.Size * 1.02 + 100MB)) { $fails += "$($it.Text): 옮길 드라이브의 공간이 부족해서 건너뜀" }
-                    else { foreach ($f in $a.Files) { if (-not (Move-OneFile $f)) { $fails += "${f}: 옮기지 못함" }; Pump } }
+                    if ((Free-Of $Dest) -lt ($it.Tag.Size * 1.02 + 100MB)) { $fails += "$($it.Text): 대상 드라이브 공간 부족 (건너뜀)" }
+                    else { foreach ($f in $a.Files) { if (-not (Move-OneFile $f)) { $fails += "${f}: 이동 실패" }; Pump } }
                 }
                 'movefolder' { $r = Move-FolderWithJunction $a.Path; if ($r) { $fails += "$($it.Text): $r" } }
             }
@@ -1191,15 +1191,15 @@ function Start-Clean {
         }
         Refresh-Free
         $gain = (Get-PSDrive $SL).Free - $before
-        $txt = "청소 끝났어요!`n$SL 드라이브 여유가 {0} GB 늘었어요.`n옮긴 파일은 $Dest 에 있고, 기록은 log.csv에 남겼어요." -f (GB $gain)
-        if ($fails.Count -gt 0) { $txt += "`n(건너뛰거나 실패한 것 $($fails.Count)건: $($fails[0]))" }
+        $txt = "정리가 끝났어요!`n$SL 드라이브 여유 공간이 {0} GB 늘었어요`n옮긴 파일은 $Dest 에 있고, 기록은 log.csv에 남겼어요" -f (GB $gain)
+        if ($fails.Count -gt 0) { $txt += "`n건너뛰었거나 실패한 항목 $($fails.Count)건: $($fails[0])" }
         $lv.Items.Clear(); $script:sayText = $txt; Set-Phase 'done'
     } catch {
         if ("$_" -ne 'closing') { $script:sayText = "앗, 문제가 생겼어요: $_"; Set-Phase 'done' }
     }
 }
 
-# ---------- 자체 점검 (-SelfTest): 마우스/최대화/크기 변경을 흉내 내서 화면 동작을 확인해요 ----------
+# ---------- 자체 점검 (-SelfTest): 마우스·최대화·크기 변경 시뮬레이션 ----------
 function Run-SelfTest {
     $form.Show()
     for ($i = 0; $i -lt 4; $i++) { [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 80 }
@@ -1254,7 +1254,7 @@ function Run-SelfTest {
 $form.Add_FormClosing({
     if ($script:phase -eq 'cleaning') {
         $_.Cancel = $true
-        [void][Windows.Forms.MessageBox]::Show($form, '청소하는 동안에는 닫을 수 없어요. 끝난 뒤에 닫아 주세요.', '미미 청소 도우미', 'OK', 'Information')
+        [void][Windows.Forms.MessageBox]::Show($form, '정리하는 동안에는 창을 닫을 수 없어요. 끝난 뒤에 닫아 주세요.', '미미치 청소 도우미', 'OK', 'Information')
         return
     }
     $script:closing = $true
@@ -1273,7 +1273,7 @@ Refresh-Free
 Set-Phase 'before'
 if ($SelfTest) { Run-SelfTest; exit }
 
-# 스크린샷용 (-Snapshot): 가짜 예시 데이터로 화면을 그려서 PNG로 저장해요
+# 스크린샷용 (-Snapshot): 예시 데이터로 화면을 PNG로 저장
 if ($Snapshot) {
     $timer.Stop()
     if ($SnapW -gt 0) {
@@ -1293,19 +1293,19 @@ if ($Snapshot) {
     }
     $script:filling = $true
     $demo = @(
-        @('del', $env:TEMP, 3.2GB, '사용자 임시 파일 (2일 넘은 것만)', @{ Type = 'cache' }),
-        @('del', "$env:LOCALAPPDATA\npm-cache", 1.8GB, 'npm 다운로드 캐시 (다시 받아짐)', @{ Type = 'cache' }),
-        @('del', "$UserHome\Desktop 의 node_modules (4개)", 1.1GB, 'npm install로 다시 만들 수 있어요 (안 쓰는 프로젝트만 체크하세요)', @{ Type = 'nodemodules' }),
-        @('move', "$UserHome\Videos (8개 파일)", 14.5GB, "${MinMB}MB 이상 큰 파일들. 예: record.mp4, trip.mov", @{ Type = 'movefiles' }),
-        @('move', "$UserHome\Documents\old-project", 6.3GB, "큰 폴더. ${DL}로 옮기고 원래 자리엔 연결을 남겨요 (프로그램 경로 안 깨짐)", @{ Type = 'movefolder' }),
-        @('check', "$env:APPDATA\SomeApp", 1.2GB, '프로그램 데이터. 어떤 프로그램 건지 확인 후 판단', @{ Type = 'info' }),
-        @('keep', $env:SystemRoot, 30GB, 'Windows 본체', @{ Type = 'info' })
+        @('del', $env:TEMP, 3.2GB, '사용자 임시 파일 (2일 경과분)', @{ Type = 'cache' }),
+        @('del', "$env:LOCALAPPDATA\npm-cache", 1.8GB, 'npm 캐시 (재다운로드)', @{ Type = 'cache' }),
+        @('del', "$UserHome\Desktop 의 node_modules (4개)", 1.1GB, 'npm install로 재생성 가능. 미사용 프로젝트만 선택', @{ Type = 'nodemodules' }),
+        @('move', "$UserHome\Videos (8개 파일)", 14.5GB, "${MinMB}MB 이상 대용량 파일. 예: record.mp4, trip.mov", @{ Type = 'movefiles' }),
+        @('move', "$UserHome\Documents\old-project", 6.3GB, "대용량 폴더. ${DL}로 이동 후 원래 위치에 정션 생성 (경로 유지)", @{ Type = 'movefolder' }),
+        @('check', "$env:APPDATA\SomeApp", 1.2GB, '프로그램 데이터. 용도 확인 후 판단', @{ Type = 'info' }),
+        @('keep', $env:SystemRoot, 30GB, 'Windows 시스템', @{ Type = 'info' })
     )
     foreach ($d in $demo) { Add-Row $d[0] $d[1] $d[2] $d[3] $d[4] }
     Fill-List
     $script:prog = 0.6; $script:frame = $SnapFrame
-    if ($SnapPhase -eq 'done') { $script:sayText = "청소 끝났어요!`n$SL 드라이브 여유가 12.4 GB 늘었어요.`n옮긴 파일은 $DL`:\정리대기 에 있고, 기록은 log.csv에 남겼어요."; $lv.Items.Clear() }
-    if ($SnapPhase -eq 'analyzing') { $script:sayText = "살펴보는 중이에요... (3/5)`nAppData 안을 둘러보고 있어요." }
+    if ($SnapPhase -eq 'done') { $script:sayText = "정리가 끝났어요!`n$SL 드라이브 여유 공간이 12.4 GB 늘었어요`n옮긴 파일은 $DL`:\정리대기 에 있고, 기록은 log.csv에 남겼어요"; $lv.Items.Clear() }
+    if ($SnapPhase -eq 'analyzing') { $script:sayText = "살펴보는 중이에요 (3/5)`nAppData를 둘러보는 중이에요" }
     Set-Phase $SnapPhase
     $form.Show()
     for ($i = 0; $i -lt 4; $i++) { [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 120 }

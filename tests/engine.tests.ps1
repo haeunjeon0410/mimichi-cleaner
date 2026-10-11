@@ -49,7 +49,7 @@ Check "로그 기록됨" ((Get-Content $LogFile -Raw) -match 'move\+junction')
 $w = New-Walk "$UserHome\Desktop"
 Check "링크 안 파일을 C 용량으로 세지 않음 (count=$($w.Count), links=$($w.Links))" ($w.Count -eq 0 -and $w.Links -eq 1)
 $msg = Move-FolderWithJunction $p
-Check "이미 링크인 폴더는 건너뜀 ('$msg')" ($msg -like '*이미 연결된*')
+Check "이미 링크인 폴더는 건너뜀 ('$msg')" ($msg -like '*이미 정션*')
 
 "[4] 거절/안전 케이스"
 $q = "$UserHome\Documents\withlink"
@@ -58,7 +58,7 @@ New-Item -ItemType Junction -Path "$q\inner" -Target "$UserHome\other" | Out-Nul
 $msg = Move-FolderWithJunction $q
 Check "폴더 안에 링크가 있으면 건너뜀 ('$msg')" ($msg -like '*링크*' -and [IO.File]::Exists("$q\x.txt") -and -not [IO.Directory]::Exists("$Dest\Documents\withlink"))
 $msg = Move-FolderWithJunction "$Work"
-Check "사용자 폴더 밖은 건너뜀 ('$msg')" ($msg -like '*밖*')
+Check "사용자 폴더 밖은 건너뜀 ('$msg')" ($msg -like '*외부*')
 
 $lk = "$UserHome\Documents\locked"
 Mk "$lk\held.txt" 100; Mk "$lk\free.txt" 100
