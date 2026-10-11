@@ -838,7 +838,7 @@ function Render-Static {
 }
 $script:static = $null
 $script:lastRebuild = [DateTime]::MinValue
-function Rebuild { $script:lastRebuild = Get-Date; $old = $script:static; $script:static = Render-Static; if ($old) { $old.Dispose() }; $canvas.Invalidate() }
+function Rebuild { if ($form.WindowState -eq 'Minimized' -or $script:W -lt 100 -or $script:H -lt 100) { return }; $script:lastRebuild = Get-Date; $old = $script:static; $script:static = Render-Static; if ($old) { $old.Dispose() }; $canvas.Invalidate() }
 
 # ---------- 폼 / 캔버스 ----------
 $mimiBmp = New-Object Drawing.Bitmap 44, 48
@@ -1050,11 +1050,17 @@ $resizeTimer = New-Object Windows.Forms.Timer
 $resizeTimer.Interval = 50
 $resizeTimer.Add_Tick({
     $resizeTimer.Stop()
+    if ($form.WindowState -eq 'Minimized' -or $form.ClientSize.Width -lt 100 -or $form.ClientSize.Height -lt 100) { return }   # 최소화 중에는 다시 그리지 않음
     Apply-Region
     Apply-Layout ([int]($form.ClientSize.Width / $Sc)) ([int]($form.ClientSize.Height / $Sc))
     Rebuild
 })
 $form.Add_SizeChanged({ $resizeTimer.Stop(); $resizeTimer.Start() })
+
+# 오류는 위치(스택)와 함께 error.log에 기록
+function Write-ErrorLog($where, $err) {
+    try { Add-Content -Path (Join-Path $PSScriptRoot 'error.log') -Encoding UTF8 -Value ("{0}  [{1}] {2}`n    {3}`n    {4}" -f (Get-Date -Format s), $where, $err, ($err.ScriptStackTrace -replace "`n", ' | '), ($err.InvocationInfo.PositionMessage -replace "`r?`n", ' ')) } catch { }
+}
 
 # ---------- 분석 ----------
 $script:rows = @()
@@ -1236,7 +1242,11 @@ function Start-Analyze {
         Set-Phase 'ready'; Update-Sum
     } catch {
         $script:lastErr = "$_"
-        if ("$_" -ne 'closing') { Say "앗, 문제가 생겼어요: $_"; Set-Phase 'done' }
+        if ("$_" -ne 'closing') {
+            Write-ErrorLog '분석' $_
+            Set-Phase 'before'
+            [void][Windows.Forms.MessageBox]::Show($form, "분석 중에 문제가 생겨서 멈췄어요. 아무것도 지우거나 옮기지 않았어요.`n`n'드라이브 분석하기'를 다시 눌러 주세요.`n계속되면 error.log를 보내 주세요:`n$PSScriptRoot\error.log`n`n(원인: $_)", '미미 청소 도우미', 'OK', 'Warning')
+        }
     }
 }
 
@@ -1280,7 +1290,10 @@ function Start-Clean {
         if ($fails.Count -gt 0) { $txt += "`n건너뛰었거나 실패한 항목 $($fails.Count)건: $($fails[0])" }
         $lv.Items.Clear(); $script:sayText = $txt; Set-Phase 'done'
     } catch {
-        if ("$_" -ne 'closing') { $script:sayText = "앗, 문제가 생겼어요: $_"; Set-Phase 'done' }
+        if ("$_" -ne 'closing') {
+            Write-ErrorLog '청소' $_
+            $script:sayText = "중간에 문제가 생겨서 멈췄어요`n원본은 그대로예요. 분석을 다시 하고 청소를 눌러 이어서 할 수 있어요`n(원인: $_)"; Set-Phase 'done'
+        }
     }
 }
 
@@ -1313,6 +1326,12 @@ function Run-SelfTest {
     T "최대화" ($form.WindowState -eq 'Maximized' -and $rRes.Width -gt 840)
     Toggle-Max; Pump-Until { $form.WindowState -eq 'Normal' -and $rRes.Width -eq 840 }
     T "복원" ($form.WindowState -eq 'Normal' -and $rRes.Width -eq 840)
+    # 분석 중 최소화해도 오류 없이 이어져야 함 (이전에는 크기 0짜리 이미지를 만들다 분석이 중단됨)
+    $form.WindowState = 'Minimized'; Pump-Ms 300
+    $errBefore = $Error.Count; $script:lastPaintError = $null
+    Rebuild; Apply-Layout 0 0; Rebuild; Apply-Layout 900 756
+    $form.WindowState = 'Normal'; Pump-Until { $rRes.Width -eq 840 }
+    T "최소화 중 화면 갱신해도 오류 없음, 복원 후 정상 (카드 폭 $($rRes.Width))" (-not $script:lastPaintError -and $rRes.Width -eq 840 -and ($Error.Count -eq $errBefore))
     $form.ClientSize = New-Object Drawing.Size ([int](1100 * $Sc)), ([int](820 * $Sc)); Pump-Until { $rRes.Width -eq 1040 }
     T "창을 키우면 결과 카드와 목록도 커짐 (카드 폭 $($rRes.Width))" ($rRes.Width -eq 1040 -and $lv.Width -gt [int](900 * $Sc))
     $form.ClientSize = New-Object Drawing.Size ([int](800 * $Sc)), ([int](660 * $Sc)); Pump-Until { $rRes.Width -le 740 }
