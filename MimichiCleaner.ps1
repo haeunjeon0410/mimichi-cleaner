@@ -926,7 +926,7 @@ function Refresh-Free {
 function Say($text) {
     $script:sayText = $text
     if ($script:trace) { Add-Content -Path $script:trace -Value ('{0:HH:mm:ss.fff}  {1}' -f (Get-Date), ($text -replace "`n", ' | ')) }
-    if ($script:phase -in 'ready', 'cleaning') { $script:footerText = ($text -replace "`n", '   '); Inv $rFoot } elseif (((Get-Date) - $script:lastRebuild).TotalMilliseconds -gt 150) { Rebuild }   # 화면 갱신은 0.15초에 한 번만
+    if ($script:phase -in 'ready', 'cleaning') { $script:footerText = ($text -replace "`n", '   '); Inv $rFoot } elseif (((Get-Date) - $script:lastRebuild).TotalMilliseconds -gt 350) { Rebuild }   # 문구 영역 재생성은 0.35초에 한 번만
 }
 function Update-Sum {
     if ($script:filling) { return }
@@ -1066,7 +1066,7 @@ function Run-Walkers($walkers, $step, $what) {
     $b = [BatchScan]::new([Walker[]]$walkers, 6)
     while (-not $b.Done) {
         Say ("살펴보는 중이에요... {0}`n{1} ({2}/{3})" -f $step, $what, $b.Completed, $walkers.Count)
-        Start-Sleep -Milliseconds 150; Pump
+        Start-Sleep -Milliseconds 15; Pump   # 짧게 쉬며 화면 이벤트를 계속 처리 (애니메이션 끊김 방지)
     }
 }
 function Fill-List {
