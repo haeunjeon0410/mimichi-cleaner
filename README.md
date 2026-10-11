@@ -56,10 +56,6 @@ powershell -ExecutionPolicy Bypass -File .\MimichiCleaner.ps1 -Dest "E:\Moved" -
 
 중요 자료는 사전 백업 권장. 사용에 따른 손해 책임 없음.
 
-## 글꼴
-
-[LINE Seed Sans KR](https://seed.line.me/) 사용. 라이선스상 저장소 미포함. `fonts/`에 `LINESeedKR-Rg.ttf`, `LINESeedKR-Bd.ttf` 배치 시 적용, 미배치 시 맑은 고딕.
-
 ## 개발
 
 ```powershell
@@ -69,10 +65,3 @@ powershell -ExecutionPolicy Bypass -File .\MimichiCleaner.ps1 -Dest "E:\Moved" -
 .\tests\lint.ps1                          # 변수·함수 이름 충돌 점검
 ```
 
-## 고지
-
-비영리 팬 작품. 미미치(みみっち)는 다마고치 시리즈 캐릭터로 © Bandai 소유이며, 본 프로젝트와 무관. 권리자 요청 시 이미지 삭제.
-
-## 라이선스
-
-[MIT](LICENSE)
