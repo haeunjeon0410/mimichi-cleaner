@@ -126,6 +126,18 @@ $script:IsAdmin = $true
 $r = Set-StartupDisabled (Get-StartupEntries | Where-Object Name -eq 'LGUpdater')
 Check "관리자면 시스템 전체 항목도 끔 (msg='$r')" ($r -eq '' -and -not @(Get-StartupEntries | Where-Object Name -eq 'LGUpdater')[0].Enabled)
 Remove-Item $rk -Recurse -Force
+
+"[9] 게임 녹화 끄기 / 메모리 사용 목록 (임시 레지스트리 경로에서만 시험)"
+$gk = "HKCU:\Software\MimichiTest9_$id"
+$script:GameDvr = @{ Store = "$gk\Store"; Capture = "$gk\Capture" }
+[void](New-Item "$gk\Store" -Force); Set-ItemProperty "$gk\Store" -Name GameDVR_Enabled -Value 1 -Type DWord
+Check "켜져 있으면 끄기 대상으로 인식" (Test-GameDvrOn)
+$r = Set-GameDvrOff
+Check "끄면 꺼진 상태가 됨 (msg='$r')" ($r -eq '' -and -not (Test-GameDvrOn) -and (Get-ItemProperty "$gk\Capture").AppCaptureEnabled -eq 0)
+Check "이미 꺼져 있으면 대상 아님" (-not (Test-GameDvrOn))
+Remove-Item $gk -Recurse -Force
+$mt = @(Get-MemoryTop 3)
+Check "메모리 상위 프로그램을 큰 순서로 돌려줌 ($(($mt | ForEach-Object Name) -join ','))" ($mt.Count -eq 3 -and $mt[0].Bytes -ge $mt[1].Bytes -and $mt[1].Bytes -ge $mt[2].Bytes -and $mt[0].Name -notmatch '^svchost$')
 "결과: PASS $ok / FAIL $bad"
 # 정리 (링크는 링크만 지워요)
 foreach ($l in "$UserHome\Desktop\proj", "$UserHome\Documents\locked", "$UserHome\Documents\withlink\inner") { if ([IO.Directory]::Exists($l)) { try { [IO.Directory]::Delete($l) } catch { } } }

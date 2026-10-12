@@ -700,6 +700,23 @@ function Set-StartupDisabled($e) {
         ''
     } catch { "끄지 못함: $($_.Exception.Message)" }
 }
+# 시스템 설정 하나: Xbox 게임 녹화(Game DVR). 켜져 있으면 게임 중 성능을 조금 사용함. 설정 앱 > 게임 > 캡처에서 다시 켤 수 있음
+$script:GameDvr = @{ Store = 'HKCU:\System\GameConfigStore'; Capture = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' }
+function Test-GameDvrOn { (Get-ItemProperty -Path $script:GameDvr.Store -ErrorAction SilentlyContinue).GameDVR_Enabled -eq 1 }
+function Set-GameDvrOff {
+    try {
+        if (-not (Test-Path $script:GameDvr.Capture)) { [void](New-Item -Path $script:GameDvr.Capture -Force -ErrorAction Stop) }
+        Set-ItemProperty -Path $script:GameDvr.Store -Name 'GameDVR_Enabled' -Value 0 -Type DWord -ErrorAction Stop
+        Set-ItemProperty -Path $script:GameDvr.Capture -Name 'AppCaptureEnabled' -Value 0 -Type DWord -ErrorAction Stop
+        Write-Log 'gamedvr-off' 'GameDVR' '' 0
+        ''
+    } catch { "끄지 못함: $($_.Exception.Message)" }
+}
+# 메모리를 많이 쓰는 프로그램 (같은 이름은 합산, 시스템 프로세스 제외)
+function Get-MemoryTop($n = 4) {
+    Get-Process | Group-Object Name | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Bytes = ($_.Group | Measure-Object WorkingSet64 -Sum).Sum } } |
+        Where-Object { $_.Name -notmatch '^(svchost|System|Idle|Memory Compression|Registry|MsMpEng|dwm|csrss|explorer|powershell)$' } | Sort-Object Bytes -Descending | Select-Object -First $n
+}
 # 폴더 일괄 삭제 (깊은 경로를 위해 cmd 사용, 링크는 링크만 제거)
 function Remove-Tree($path) {
     if ([IO.Directory]::Exists($path)) { cmd.exe /c "rmdir /s /q `"$path`"" | Out-Null }
@@ -978,10 +995,10 @@ function Update-Sum {
     $del = 0; $mov = 0; $st = 0
     foreach ($it in $lv.CheckedItems) {
         $t = $it.Tag.Act.Type
-        if ($t -in 'cache', 'recycle', 'nodemodules') { $del += $it.Tag.Size } elseif ($t -in 'movefiles', 'movefolder') { $mov += $it.Tag.Size } elseif ($t -eq 'startup') { $st++ }
+        if ($t -in 'cache', 'recycle', 'nodemodules') { $del += $it.Tag.Size } elseif ($t -in 'movefiles', 'movefolder') { $mov += $it.Tag.Size } elseif ($t -in 'startup', 'tweak') { $st++ }
     }
     $script:footerText = "선택: 삭제 {0} GB · 이동 {1} GB" -f (GB $del), (GB $mov)
-    if ($st -gt 0) { $script:footerText += " · 시작 프로그램 ${st}개 끄기" }
+    if ($st -gt 0) { $script:footerText += " · 속도 설정 ${st}건" }
     Inv $rFoot
 }
 
@@ -1137,7 +1154,7 @@ function Fill-List {
             $it.ForeColor = HexC $tagColor[$k]
             $it.Tag = @{ Act = $r.Act; Size = $r.Size; Path = $r.Path; Key = $k }
             [void]$lv.Items.Add($it)
-            if ($r.Act.Type -in 'cache', 'recycle', 'movefiles', 'movefolder', 'startup') { $it.Checked = $true }   # node_modules만 직접 선택
+            if ($r.Act.Type -in 'cache', 'recycle', 'movefiles', 'movefolder', 'startup', 'tweak') { $it.Checked = $true }   # node_modules만 직접 선택
         }
     }
     $lv.EndUpdate()
@@ -1213,6 +1230,16 @@ function Start-Analyze {
             } elseif ($cls -eq 'keep') {
                 Add-Row 'keep' "시작 프로그램: $($e.Name)" 0 "보안·드라이버·단축키·직접 만든 스크립트. 그대로 둠. $shortCmd" $info -Always
             }
+        }
+
+        if (Test-GameDvrOn) {
+            Add-Row 'speed' '게임 녹화(Xbox Game DVR) 끄기' 0 '켜져 있으면 게임 중 성능을 조금 사용. 설정 > 게임 > 캡처에서 다시 켤 수 있음' @{ Type = 'tweak'; Id = 'gamedvr' } -Always
+        }
+        $os = Get-CimInstance Win32_OperatingSystem
+        $usedPct = [int]((1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize) * 100)
+        if ($usedPct -ge 60) {
+            $top = (Get-MemoryTop 4 | ForEach-Object { '{0} {1:N1}GB' -f $_.Name, ($_.Bytes / 1GB) }) -join ', '
+            Add-Row 'speed' ('메모리 사용 {0}% ({1:N1}/{2:N1} GB)' -f $usedPct, (($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB), ($os.TotalVisibleMemorySize / 1MB)) 0 "많이 쓰는 프로그램: $top. 안 쓰는 건 직접 종료하면 가장 빨라져요" $info -Always
         }
 
         # (3/5) AppData
@@ -1313,10 +1340,10 @@ function Start-Clean {
     $checked = @($lv.CheckedItems)
     if ($checked.Count -eq 0) { Say '선택한 항목이 없어요'; return }
     $nDel = @($checked | Where-Object { $_.Tag.Act.Type -in 'cache', 'recycle', 'nodemodules' }).Count
-    $nSt = @($checked | Where-Object { $_.Tag.Act.Type -eq 'startup' }).Count
+    $nSt = @($checked | Where-Object { $_.Tag.Act.Type -in 'startup', 'tweak' }).Count
     $nMove = $checked.Count - $nDel - $nSt
     $hasFolder = @($checked | Where-Object { $_.Tag.Act.Type -eq 'movefolder' }).Count -gt 0
-    $msg = "삭제 ${nDel}건, 이동 ${nMove}건, 시작 프로그램 끄기 ${nSt}건을 진행할까요?`n`n시작 프로그램은 삭제되지 않아요. 작업 관리자 > 시작 앱에서 언제든 다시 켤 수 있어요.`n`n옮기는 항목은 $Dest 의 같은 경로로 옮겨지고, 폴더는 원래 경로 그대로 열려요.`n옮기려는 폴더를 쓰는 프로그램(Steam, VS Code 등)은 먼저 닫아 주세요. 실행 중인 건 건너뛰어요."
+    $msg = "삭제 ${nDel}건, 이동 ${nMove}건, 속도 설정 ${nSt}건을 진행할까요?`n`n속도 설정(시작 프로그램·게임 녹화 끄기)은 삭제가 아니라 끄는 것이라 설정에서 언제든 다시 켤 수 있어요.`n`n옮기는 항목은 $Dest 의 같은 경로로 옮겨지고, 폴더는 원래 경로 그대로 열려요.`n옮기려는 폴더를 쓰는 프로그램(Steam, VS Code 등)은 먼저 닫아 주세요. 실행 중인 건 건너뛰어요."
     if ($hasFolder) { $msg += "`n폴더를 옮기려면 그 폴더를 쓰는 프로그램(VS Code, 터미널 등)을 먼저 닫아 주세요." }
     if ($DryRun) { $msg += "`n`n[미리보기 모드] 실제로는 아무것도 지우거나 옮기지 않아요." }
     if ((Ask $msg) -ne 'Yes') { return }
@@ -1338,6 +1365,7 @@ function Start-Clean {
                     }
                     'movefolder' { $r = Move-FolderWithJunction $a.Path; if ($r) { $fails += "$($it.Text): $r" } }
                     'startup' { $r = Set-StartupDisabled $a.Entry; if ($r) { $fails += "$($it.Text): $r" } }
+                    'tweak' { $r = Set-GameDvrOff; if ($r) { $fails += "$($it.Text): $r" } }
                 }
             }
             $done++; $script:prog = $done / $checked.Count; Inv $rFoot; Pump
