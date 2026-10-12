@@ -659,6 +659,47 @@ function Move-FolderWithJunction($src) {
     if ([IO.Directory]::Exists($old)) { return "이동 완료. 이전 폴더 일부 삭제 실패: $old" }
     ''
 }
+# 시작 프로그램: 작업 관리자의 '시작 앱' 켜기/끄기와 같은 방식(StartupApproved). 삭제하지 않으므로 언제든 다시 켤 수 있음
+$script:StartupKeys = @(
+    @{ Admin = $false; Run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; Appr = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run' },
+    @{ Admin = $true; Run = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'; Appr = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run' },
+    @{ Admin = $true; Run = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'; Appr = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32' }
+)
+# 끄는 대상: 업데이트 알림·런처·보조 프로그램. 보안·드라이버·단축키·직접 만든 스크립트는 건드리지 않음 (keep이 우선)
+$script:StartupKeep = 'Security|Defender|Realtek|Rtk|NVIDIA|Intel|AMD|Synaptics|Touchpad|Vanguard|AhnLab|wizvera|ipinside|MalwareZero|Hotkey|Bluetooth|Audio|Dolby|DriverStore|\|\s*"?(powershell|pwsh|cmd|wscript|cscript|mshta)|\.(bat|cmd|vbs|ps1)\b'
+$script:StartupOff = 'Update|jusched|Launcher|Helper|Quick ?Guide|SmartAssistant|PCmover|CCXProcess|Creative Cloud|STOVE|Nexon|RiotClient|Steam|Epic|Battle\.net|Discord|Spotify|Teams|Slack|Zoom|Docker Desktop|AutoLaunch|afreeca|SendAnywhere|CrossEX|Wondershare|REPORTX'
+function Get-StartupEntries {
+    $list = @()
+    $skip = 'PSPath', 'PSParentPath', 'PSChildName', 'PSDrive', 'PSProvider'
+    foreach ($k in $script:StartupKeys) {
+        $p = Get-ItemProperty -Path $k.Run -ErrorAction SilentlyContinue
+        if (-not $p) { continue }
+        $ap = Get-ItemProperty -Path $k.Appr -ErrorAction SilentlyContinue
+        foreach ($v in $p.PSObject.Properties) {
+            if ($skip -contains $v.Name) { continue }
+            $enabled = $true
+            if ($ap -and $ap.PSObject.Properties[$v.Name]) { $b = $ap.($v.Name); if ($b -and ($b[0] -band 1)) { $enabled = $false } }
+            $list += [pscustomobject]@{ Name = $v.Name; Cmd = [string]$v.Value; Key = $k; Enabled = $enabled }
+        }
+    }
+    $list
+}
+function Classify-Startup($e) {
+    $s = $e.Name + ' | ' + $e.Cmd
+    if ($s -match $script:StartupKeep) { return 'keep' }
+    if ($s -match $script:StartupOff) { return 'off' }
+    $null
+}
+function Set-StartupDisabled($e) {
+    if ($e.Key.Admin -and -not $script:IsAdmin) { return '관리자 권한 필요 (건너뜀)' }
+    try {
+        if (-not (Test-Path $e.Key.Appr)) { [void](New-Item -Path $e.Key.Appr -Force -ErrorAction Stop) }
+        $bytes = [byte[]](3, 0, 0, 0) + [BitConverter]::GetBytes([DateTime]::Now.ToFileTime())
+        [void](New-ItemProperty -Path $e.Key.Appr -Name $e.Name -PropertyType Binary -Value $bytes -Force -ErrorAction Stop)
+        Write-Log 'startup-off' $e.Name $e.Cmd 0
+        ''
+    } catch { "끄지 못함: $($_.Exception.Message)" }
+}
 # 폴더 일괄 삭제 (깊은 경로를 위해 cmd 사용, 링크는 링크만 제거)
 function Remove-Tree($path) {
     if ([IO.Directory]::Exists($path)) { cmd.exe /c "rmdir /s /q `"$path`"" | Out-Null }
@@ -873,9 +914,10 @@ Apply-Layout 900 756
 $groupDef = [ordered]@{
     'del'   = '삭제 가능 (재생성되는 항목)'
     'move'  = "이동 권장 (${DL} 드라이브)"
+    'speed' = '속도 개선 (부팅 때 자동 실행 끄기)'
     'keep'  = '그대로 둠 (변경 금지)'
 }
-$tagColor = @{ 'del' = '#2F8F5B'; 'move' = '#2E6FB0'; 'check' = '#A9780E'; 'keep' = '#C0453D' }
+$tagColor = @{ 'del' = '#2F8F5B'; 'move' = '#2E6FB0'; 'speed' = '#7A5CB5'; 'keep' = '#C0453D' }
 $brTag = @{}; foreach ($kk in $tagColor.Keys) { $brTag[$kk] = New-Object Drawing.SolidBrush (HexC $tagColor[$kk]) }
 $brHeadBg = New-Object Drawing.SolidBrush (HexC '#EEF6EE'); $brHdrRow = New-Object Drawing.SolidBrush (HexC '#EDF5EC')
 $brSel = New-Object Drawing.SolidBrush (HexC '#E0EFE3'); $brRow = New-Object Drawing.SolidBrush (HexC $C.card)
@@ -933,12 +975,13 @@ function Say($text) {
 }
 function Update-Sum {
     if ($script:filling) { return }
-    $del = 0; $mov = 0
+    $del = 0; $mov = 0; $st = 0
     foreach ($it in $lv.CheckedItems) {
         $t = $it.Tag.Act.Type
-        if ($t -in 'cache', 'recycle', 'nodemodules') { $del += $it.Tag.Size } elseif ($t -in 'movefiles', 'movefolder') { $mov += $it.Tag.Size }
+        if ($t -in 'cache', 'recycle', 'nodemodules') { $del += $it.Tag.Size } elseif ($t -in 'movefiles', 'movefolder') { $mov += $it.Tag.Size } elseif ($t -eq 'startup') { $st++ }
     }
     $script:footerText = "선택: 삭제 {0} GB · 이동 {1} GB" -f (GB $del), (GB $mov)
+    if ($st -gt 0) { $script:footerText += " · 시작 프로그램 ${st}개 끄기" }
     Inv $rFoot
 }
 
@@ -1094,7 +1137,7 @@ function Fill-List {
             $it.ForeColor = HexC $tagColor[$k]
             $it.Tag = @{ Act = $r.Act; Size = $r.Size; Path = $r.Path; Key = $k }
             [void]$lv.Items.Add($it)
-            if ($r.Act.Type -in 'cache', 'recycle', 'movefiles', 'movefolder') { $it.Checked = $true }   # node_modules만 직접 선택
+            if ($r.Act.Type -in 'cache', 'recycle', 'movefiles', 'movefolder', 'startup') { $it.Checked = $true }   # node_modules만 직접 선택
         }
     }
     $lv.EndUpdate()
@@ -1113,7 +1156,10 @@ function Start-Analyze {
             @("$L\Yarn\Cache", 'yarn 캐시 (재다운로드)', 0),
             @("$L\Google\Chrome\User Data\Default\Cache", 'Chrome 캐시 (로그인·북마크 유지)', 0),
             @("$L\Microsoft\Edge\User Data\Default\Cache", 'Edge 캐시 (로그인·북마크 유지)', 0),
-            @("$L\Microsoft\Windows\INetCache", '인터넷 임시 파일', 0), @("$L\Microsoft\Windows\WER", 'Windows 오류 보고서', 0)
+            @("$L\Microsoft\Windows\INetCache", '인터넷 임시 파일', 0), @("$L\Microsoft\Windows\WER", 'Windows 오류 보고서', 0),
+            @("$env:SystemRoot\SoftwareDistribution\Download", 'Windows 업데이트 내려받은 파일 (관리자 권한 필요, 필요하면 다시 받음)', 0),
+            @("$env:SystemRoot\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache", 'Windows 전달 최적화 캐시 (관리자 권한 필요)', 0),
+            @("$env:SystemRoot\Minidump", 'Windows 오류 덤프 (관리자 권한 필요)', 0)
         )
         $ws = @($cache | ForEach-Object { New-W $_[0] -olderDays $_[2] -maxSec 20 })
         Run-Walkers $ws '(1/5)' '임시 파일과 캐시를 확인하고 있어요'
@@ -1155,6 +1201,17 @@ function Start-Analyze {
                 Add-Row 'move' $d.FullName $sz "게임·개발 도구. ${DL}로 이동 후 원래 경로로 계속 사용 (실행 중이면 종료 필요)" @{ Type = 'movefolder'; Path = $d.FullName } $ws[$i].Truncated
             } else {
                 Add-Row 'keep' $d.FullName $sz '설치된 프로그램·시스템 구성요소. 이동 시 오류 위험' $info $ws[$i].Truncated
+            }
+        }
+
+        # 속도 개선: 시작 프로그램 (업데이트 알림·런처·보조 프로그램만 끄기 대상, 나머지는 건드리지 않음)
+        foreach ($e in @(Get-StartupEntries | Where-Object Enabled)) {
+            $cls = Classify-Startup $e
+            $shortCmd = ($e.Cmd -replace '^"?([^"]*?\.exe).*', '$1')
+            if ($cls -eq 'off') {
+                Add-Row 'speed' "시작 프로그램: $($e.Name)" 0 "부팅 때 자동 실행 끄기. 삭제 아님 (작업 관리자 > 시작 앱에서 다시 켤 수 있음). $shortCmd" @{ Type = 'startup'; Entry = $e } -Always
+            } elseif ($cls -eq 'keep') {
+                Add-Row 'keep' "시작 프로그램: $($e.Name)" 0 "보안·드라이버·단축키·직접 만든 스크립트. 그대로 둠. $shortCmd" $info -Always
             }
         }
 
@@ -1256,9 +1313,10 @@ function Start-Clean {
     $checked = @($lv.CheckedItems)
     if ($checked.Count -eq 0) { Say '선택한 항목이 없어요'; return }
     $nDel = @($checked | Where-Object { $_.Tag.Act.Type -in 'cache', 'recycle', 'nodemodules' }).Count
-    $nMove = $checked.Count - $nDel
+    $nSt = @($checked | Where-Object { $_.Tag.Act.Type -eq 'startup' }).Count
+    $nMove = $checked.Count - $nDel - $nSt
     $hasFolder = @($checked | Where-Object { $_.Tag.Act.Type -eq 'movefolder' }).Count -gt 0
-    $msg = "삭제 ${nDel}건, 이동 ${nMove}건을 진행할까요?`n`n옮기는 항목은 $Dest 의 같은 경로로 옮겨지고, 폴더는 원래 경로 그대로 열려요.`n옮기려는 폴더를 쓰는 프로그램(Steam, VS Code 등)은 먼저 닫아 주세요. 실행 중인 건 건너뛰어요."
+    $msg = "삭제 ${nDel}건, 이동 ${nMove}건, 시작 프로그램 끄기 ${nSt}건을 진행할까요?`n`n시작 프로그램은 삭제되지 않아요. 작업 관리자 > 시작 앱에서 언제든 다시 켤 수 있어요.`n`n옮기는 항목은 $Dest 의 같은 경로로 옮겨지고, 폴더는 원래 경로 그대로 열려요.`n옮기려는 폴더를 쓰는 프로그램(Steam, VS Code 등)은 먼저 닫아 주세요. 실행 중인 건 건너뛰어요."
     if ($hasFolder) { $msg += "`n폴더를 옮기려면 그 폴더를 쓰는 프로그램(VS Code, 터미널 등)을 먼저 닫아 주세요." }
     if ($DryRun) { $msg += "`n`n[미리보기 모드] 실제로는 아무것도 지우거나 옮기지 않아요." }
     if ((Ask $msg) -ne 'Yes') { return }
@@ -1279,6 +1337,7 @@ function Start-Clean {
                         else { foreach ($f in $a.Files) { if (-not (Move-OneFile $f)) { $fails += "${f}: 이동 실패" }; Pump } }
                     }
                     'movefolder' { $r = Move-FolderWithJunction $a.Path; if ($r) { $fails += "$($it.Text): $r" } }
+                    'startup' { $r = Set-StartupDisabled $a.Entry; if ($r) { $fails += "$($it.Text): $r" } }
                 }
             }
             $done++; $script:prog = $done / $checked.Count; Inv $rFoot; Pump

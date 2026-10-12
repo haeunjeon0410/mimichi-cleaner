@@ -100,6 +100,32 @@ Check "시간 상한이 동작 (WinSxS를 0.05초만 훑으면 Truncated)" ((New
 Mk "$UserHome\OneDrive\Docs\a.txt" 10
 $msg = Move-FolderWithJunction "$UserHome\OneDrive\Docs"
 Check "OneDrive 폴더 건너뜀 ('$msg')" ($msg -like '*OneDrive*' -and [IO.File]::Exists("$UserHome\OneDrive\Docs\a.txt") -and -not [IO.Directory]::Exists((Dest-Path "$UserHome\OneDrive\Docs")))
+"[8] 시작 프로그램 끄기 (임시 레지스트리 경로에서만 시험, 실제 설정은 건드리지 않음)"
+$rk = "HKCU:\Software\MimichiTest_$id"
+$script:StartupKeys = @(@{ Admin = $false; Run = "$rk\Run"; Appr = "$rk\Appr" }, @{ Admin = $true; Run = "$rk\RunAdmin"; Appr = "$rk\ApprAdmin" })
+[void](New-Item "$rk\Run" -Force); [void](New-Item "$rk\RunAdmin" -Force)
+foreach ($n in @(@('SteamX', '"C:\Steam\steam.exe" -silent'), @('SunJavaUpdateSched', 'C:\Java\jusched.exe'), @('RtkAudUService', 'C:\Windows\System32\DriverStore\x\rtk.exe'),
+                 @('MyScript', 'powershell.exe -File C:\a.ps1'), @('AhnLabTray', 'C:\AhnLab\a.exe'), @('Unknown1', 'C:\Foo\foo.exe'))) { Set-ItemProperty "$rk\Run" -Name $n[0] -Value $n[1] }
+Set-ItemProperty "$rk\RunAdmin" -Name 'LGUpdater' -Value 'C:\LG\up.exe'
+$ents = @(Get-StartupEntries)
+Check "등록된 7개를 모두 읽음 (읽은 수 $($ents.Count))" ($ents.Count -eq 7 -and @($ents | Where-Object Enabled).Count -eq 7)
+$cls = @{}; foreach ($x in $ents) { $cls[$x.Name] = Classify-Startup $x }
+Check "런처·업데이트 알림은 끄기 대상" ($cls['SteamX'] -eq 'off' -and $cls['SunJavaUpdateSched'] -eq 'off' -and $cls['LGUpdater'] -eq 'off')
+Check "드라이버·보안·직접 만든 스크립트는 그대로 둠" ($cls['RtkAudUService'] -eq 'keep' -and $cls['AhnLabTray'] -eq 'keep' -and $cls['MyScript'] -eq 'keep')
+Check "모르는 프로그램은 건드리지 않음" ($null -eq $cls['Unknown1'])
+$steam = $ents | Where-Object Name -eq 'SteamX'
+$r = Set-StartupDisabled $steam
+$after = @(Get-StartupEntries | Where-Object Name -eq 'SteamX')[0]
+Check "끄면 '사용 안 함'으로 바뀜 (msg='$r')" ($r -eq '' -and -not $after.Enabled)
+Check "프로그램 등록 값은 그대로 남음 (삭제 아님)" ((Get-ItemProperty "$rk\Run").SteamX -eq '"C:\Steam\steam.exe" -silent')
+Check "작업 관리자 형식(첫 바이트 3 + 12바이트)으로 기록" ((Get-ItemProperty "$rk\Appr").SteamX[0] -eq 3 -and (Get-ItemProperty "$rk\Appr").SteamX.Length -eq 12)
+$script:IsAdmin = $false
+$r = Set-StartupDisabled (Get-StartupEntries | Where-Object Name -eq 'LGUpdater')
+Check "관리자가 아니면 시스템 전체 항목은 건너뜀 ('$r')" ($r -like '*관리자*' -and @(Get-StartupEntries | Where-Object { $_.Name -eq 'LGUpdater' -and $_.Enabled }).Count -eq 1)
+$script:IsAdmin = $true
+$r = Set-StartupDisabled (Get-StartupEntries | Where-Object Name -eq 'LGUpdater')
+Check "관리자면 시스템 전체 항목도 끔 (msg='$r')" ($r -eq '' -and -not @(Get-StartupEntries | Where-Object Name -eq 'LGUpdater')[0].Enabled)
+Remove-Item $rk -Recurse -Force
 "결과: PASS $ok / FAIL $bad"
 # 정리 (링크는 링크만 지워요)
 foreach ($l in "$UserHome\Desktop\proj", "$UserHome\Documents\locked", "$UserHome\Documents\withlink\inner") { if ([IO.Directory]::Exists($l)) { try { [IO.Directory]::Delete($l) } catch { } } }
